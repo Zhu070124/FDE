@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Data (contains competition-provided docs and embeddings)
+data/documents/*.docx
+data/documents/*.xlsx
+data/documents/*.pdf
+data/store/*.json
+
+# API keys
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

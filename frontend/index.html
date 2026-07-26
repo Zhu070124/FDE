@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CQUPT AI 学生成长助手</title>
+<style>
+  :root {
+    --primary: #6366f1;
+    --primary-light: #818cf8;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --text: #1e293b;
+    --text-muted: #64748b;
+    --border: #e2e8f0;
+    --policy-color: #3b82f6;
+    --exam-color: #f59e0b;
+    --psych-color: #10b981;
+    --danger: #ef4444;
+    --radius: 16px;
+    --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* === Header === */
+  header {
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: var(--shadow);
+  }
+  header .logo {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header .logo .icon { font-size: 28px; }
+  header .subtitle { font-size: 13px; color: var(--text-muted); }
+
+  /* === Main Layout === */
+  main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* === Sidebar === */
+  .sidebar {
+    width: 240px;
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    padding: 20px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sidebar .section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    padding: 8px 12px 4px;
+  }
+  .sidebar .tab {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+    transition: all .15s;
+    color: var(--text);
+  }
+  .sidebar .tab:hover { background: #f1f5f9; }
+  .sidebar .tab.active {
+    background: #eef2ff;
+    color: var(--primary);
+    font-weight: 600;
+  }
+  .sidebar .tab .emoji { font-size: 18px; }
+  .sidebar .tab .badge {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: #f1f5f9;
+    color: var(--text-muted);
+  }
+  .sidebar .tab.active .badge {
+    background: #ddd6fe;
+    color: var(--primary);
+  }
+
+  /* === Chat Area === */
+  .chat-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-width: 900px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg {
+    display: flex;
+    gap: 12px;
+    max-width: 85%;
+    animation: fadeIn .3s ease;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.assistant { align-self: flex-start; }
+
+  .msg .avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .msg.user .avatar { background: #eef2ff; }
+  .msg.assistant .avatar { background: #ecfdf5; }
+
+  .msg .bubble {
+    padding: 12px 16px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.7;
+    word-break: break-word;
+  }
+  .msg.user .bubble {
+    background: var(--primary);
+    color: white;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant .bubble {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+    box-shadow: var(--shadow);
+  }
+  .msg.assistant .bubble p { margin-bottom: 6px; }
+  .msg.assistant .bubble p:last-child { margin-bottom: 0; }
+  .msg.assistant .bubble ul, .msg.assistant .bubble ol {
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+  .msg.assistant .bubble li { margin-bottom: 4px; }
+
+  /* Sources */
+  .sources {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .sources .src-item {
+    display: flex;
+    gap: 4px;
+    align-items: baseline;
+  }
+  .sources .src-name {
+    font-weight: 600;
+    color: var(--primary);
+    cursor: pointer;
+  }
+
+  /* Disclaimer */
+  .disclaimer {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #fef3c7;
+    border-left: 3px solid #f59e0b;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #92400e;
+  }
+
+  /* Intent tag */
+  .intent-tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .intent-tag.policy { background: #dbeafe; color: #1e40af; }
+  .intent-tag.data { background: #fef3c7; color: #92400e; }
+  .intent-tag.psychological { background: #d1fae5; color: #065f46; }
+
+  /* === Input Area === */
+  .input-area {
+    padding: 16px 24px 24px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+  }
+  .input-wrapper {
+    display: flex;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 6px 6px 6px 16px;
+    transition: border-color .15s;
+  }
+  .input-wrapper:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  }
+  .input-wrapper input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    font-size: 15px;
+    outline: none;
+    color: var(--text);
+  }
+  .input-wrapper input::placeholder { color: #94a3b8; }
+  .input-wrapper button {
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background .15s;
+    white-space: nowrap;
+  }
+  .input-wrapper button:hover { background: #4f46e5; }
+  .input-wrapper button:disabled {
+    background: #cbd5e1;
+    cursor: not-allowed;
+  }
+
+  /* Scenario hint */
+  .scenario-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    text-align: center;
+  }
+  .scenario-hint span {
+    cursor: pointer;
+    color: var(--primary);
+    font-weight: 500;
+    margin: 0 6px;
+  }
+  .scenario-hint span:hover { text-decoration: underline; }
+
+  /* Welcome */
+  .welcome {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-muted);
+  }
+  .welcome h2 { font-size: 22px; color: var(--text); margin-bottom: 8px; }
+  .welcome .hints {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 20px;
+  }
+  .welcome .hint-chip {
+    padding: 8px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .welcome .hint-chip:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  /* === Responsive === */
+  @media (max-width: 640px) {
+    .sidebar { display: none; }
+    .chat-area { max-width: 100%; }
+    .msg { max-width: 95%; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="icon">🎓</span> 小邮助手
+  </div>
+  <div class="subtitle">重庆邮电大学 · 学生成长一站式咨询</div>
+</header>
+
+<main>
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="section-title">咨询场景</div>
+    <button class="tab active" data-scene="policy">
+      <span class="emoji">💼</span> 就业政策
+      <span class="badge">政策查询</span>
+    </button>
+    <button class="tab" data-scene="data">
+      <span class="emoji">📚</span> 考研咨询
+      <span class="badge">数据查询</span>
+    </button>
+    <button class="tab" data-scene="psychological">
+      <span class="emoji">💚</span> 心理支持
+      <span class="badge">温暖陪伴</span>
+    </button>
+
+    <div class="section-title" style="margin-top:16px">快捷提问</div>
+    <button class="tab quick-q" data-q="三方协议怎么签？需要注意什么？">
+      <span class="emoji">📝</span> 三方协议怎么签？
+    </button>
+    <button class="tab quick-q" data-q="重邮计算机专业考研难吗？">
+      <span class="emoji">🎯</span> 考研难度如何？
+    </button>
+    <button class="tab quick-q" data-q="期末压力大，失眠怎么办？">
+      <span class="emoji">😟</span> 期末压力大怎么办？
+    </button>
+  </nav>
+
+  <!-- Chat Area -->
+  <div class="chat-area">
+    <div class="messages" id="messages">
+      <div class="welcome">
+        <h2>👋 你好！我是小邮</h2>
+        <p>我可以帮你查询就业政策、考研数据，也愿意倾听你的烦恼。</p>
+        <div class="hints">
+          <span class="hint-chip">📋 三方协议怎么签？</span>
+          <span class="hint-chip">📊 去年计算机分数线？</span>
+          <span class="hint-chip">💬 最近学习压力很大</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <input
+          type="text"
+          id="queryInput"
+          placeholder="输入你的问题..."
+          autocomplete="off"
+        />
+        <button id="sendBtn" onclick="sendMessage()">
+          <span style="margin-right:4px">↵</span> 发送
+        </button>
+      </div>
+      <div class="scenario-hint">
+        当前场景：<strong id="sceneLabel">就业政策咨询</strong>
+        · 试试
+        <span onclick="quickAsk('三方协议怎么签？')">三方协议</span>
+        <span onclick="quickAsk('助学金申请流程？')">助学金</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API_BASE = '/api';
+let currentScene = 'policy';
+let chatHistory = [];  // 对话历史 [{role, content}]
+
+// === Scene switching ===
+document.querySelectorAll('.tab[data-scene]').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab[data-scene]').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentScene = tab.dataset.scene;
+    const labels = { policy: '就业政策咨询', data: '考研数据查询', psychological: '心理支持' };
+    document.getElementById('sceneLabel').textContent = labels[currentScene];
+  });
+});
+
+// === Quick questions ===
+document.querySelectorAll('.quick-q').forEach(btn => {
+  btn.addEventListener('click', () => quickAsk(btn.dataset.q));
+});
+
+document.querySelectorAll('.hint-chip').forEach(chip => {
+  chip.addEventListener('click', () => quickAsk(chip.textContent.replace(/^[^\s]+\s/, '')));
+});
+
+function quickAsk(q) {
+  document.getElementById('queryInput').value = q;
+  sendMessage();
+}
+
+// === Send message ===
+async function sendMessage() {
+  const input = document.getElementById('queryInput');
+  const query = input.value.trim();
+  if (!query) return;
+
+  const btn = document.getElementById('sendBtn');
+  input.value = '';
+  btn.disabled = true;
+
+  // Remove welcome
+  const welcome = document.querySelector('.welcome');
+  if (welcome) welcome.remove();
+
+  // Add user message + record history
+  addMessage('user', query);
+  chatHistory.push({ role: 'user', content: query });
+
+  // Add assistant bubble (streaming)
+  const bubble = addMessage('assistant', '', true);
+  const bubbleEl = bubble.querySelector('.bubble');
+
+  try {
+    const resp = await fetch(`${API_BASE}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, history: chatHistory.slice(0, -1) }),
+    });
+
+    if (!resp.ok) throw new Error('请求失败');
+
+    // Stream read
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      fullText += chunk;
+      bubbleEl.innerHTML = markdownToHtml(fullText);
+      // Auto-scroll
+      const msgs = document.getElementById('messages');
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    // Record assistant response in history
+    chatHistory.push({ role: 'assistant', content: fullText });
+    // Keep only last 12 messages (6 rounds)
+    if (chatHistory.length > 12) chatHistory = chatHistory.slice(-12);
+
+  } catch (e) {
+    bubbleEl.innerHTML = `⚠️ 出错了：${e.message}`;
+  }
+
+  btn.disabled = false;
+  input.focus();
+}
+
+function addMessage(role, content, isPlaceholder = false) {
+  const container = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+
+  const avatarEmoji = role === 'user' ? '👤' : '🤖';
+  div.innerHTML = `
+    <div class="avatar">${avatarEmoji}</div>
+    <div class="bubble">${isPlaceholder ? '<em style="color:#94a3b8">⏳ 思考中...</em>' : markdownToHtml(content)}</div>
+  `;
+
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function addAssistantMessage(data) {
+  const container = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+
+  let bubbleContent = '';
+
+  // Intent tag
+  const intentLabels = { policy: '📋 政策查询', data: '📊 数据查询', psychological: '💚 心理支持' };
+  bubbleContent += `<span class="intent-tag ${data.intent}">${intentLabels[data.intent] || data.intent}</span>`;
+
+  // Answer
+  bubbleContent += markdownToHtml(data.answer);
+
+  // Warning
+  if (data.warning) {
+    bubbleContent += `<div class="disclaimer">⚠️ ${data.warning}</div>`;
+  }
+
+  // Sources
+  if (data.sources && data.sources.length > 0) {
+    bubbleContent += '<div class="sources">📖 <strong>参考来源：</strong>';
+    data.sources.forEach((s, i) => {
+      bubbleContent += `<div class="src-item">· <span class="src-name">${escapeHtml(s.source)}</span> (相关度: ${s.score})</div>`;
+    });
+    bubbleContent += '</div>';
+  }
+
+  // Disclaimer for psychological
+  if (data.intent === 'psychological') {
+    bubbleContent += `<div class="disclaimer">⚠️ 本回复仅供参考，如有严重困扰请寻求专业老师帮助。全国心理援助热线：400-161-9995</div>`;
+  }
+
+  div.innerHTML = `
+    <div class="avatar">🤖</div>
+    <div class="bubble">${bubbleContent}</div>
+  `;
+
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+// === Simple markdown → HTML ===
+function markdownToHtml(text) {
+  if (!text) return '';
+
+  let html = escapeHtml(text);
+
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Lists
+  html = html.replace(/^[\-\*]\s+(.+)$/gm, '<li>$1</li>');
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Numbered steps
+  html = html.replace(/步骤(\d+)/g, '<strong>步骤$1</strong>');
+
+  // Line breaks
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = html.replace(/\n/g, '<br>');
+
+  return '<p>' + html + '</p>';
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// === Enter to send ===
+document.getElementById('queryInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// === Initial focus ===
+document.getElementById('queryInput').focus();
+</script>
+
+</body>
+</html>
