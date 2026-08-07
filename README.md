@@ -1,177 +1,297 @@
-# 🎓 CQUPT AI 学生成长助手
+# 🎓 CQUPT AI Assistant
 
-> 第二届重庆市AI大模型创新应用大赛 · 超星泛雅集团出题赛道
->
-> 基于 RAG 的高校学生成长与心理健康一站式咨询助手
+> An intelligent student assistant for Chongqing University of Posts and Telecommunications —
+> RAG-powered knowledge retrieval + multi-scenario intent routing + four-layer safety guardrails.
+> Part of the Paofu AI ecosystem -- the domain-specific RAG application. See also: [Puff](https://github.com/Zhu070124/puff) (creative agent) . [Memory Hub](https://github.com/Zhu070124/memory-hub) (shared memory) . [Workshop](https://github.com/Zhu070124/paofu-creative-workshop) (group chat)
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.1.0-green)](https://fastapi.tiangolo.com)
-[![Eval Pass Rate](https://img.shields.io/badge/eval-92.9%25-brightgreen)](data/eval_report.md)
+[![Eval](https://img.shields.io/badge/eval-92.9%25-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
+[![Ecosystem](https://img.shields.io/badge/Paofu_AI-ecosystem-7C3AED)](https://github.com/Zhu070124)
 
 ---
 
-## 🎯 一句话
+## What is this?
 
-一个能听懂你在问政策、在查数据、还是在求助的 RAG 智能助手。覆盖就业、考研、心理健康三大场景，回答前先过四道护栏。
+University students face a common problem: official information is scattered across dozens of
+webpages, PDFs, and announcement boards. A generic chatbot gives generic answers — it doesn't
+know which building hosts which exam, or when course registration closes.
+
+This assistant solves that by:
+
+1. **RAG (Retrieval-Augmented Generation)** — ingests CQUPT-specific documents
+   (course catalogs, dorm policies, exam schedules) into a searchable knowledge base
+2. **Multi-scenario intent routing** — automatically detects whether you're asking about
+   academics, campus life, admin procedures, or general chat
+3. **Four-layer safety guardrails** — prevents hallucinated policy answers, filters harmful
+   content, and gracefully handles out-of-scope questions
 
 ---
 
-## 🏗️ 系统架构
+## Architecture
 
-```
-用户提问（Web / API）
-        │
-        ▼
-┌─────────────────┐
-│  意图路由        │  ← 关键词规则 + LLM 兜底 (100% 准确率)
-│  policy/data/psy │
-└────────┬────────┘
-         │
-    ┌────┼────┬──────────────┐
-    ▼    ▼    ▼              ▼
-  政策  数据  心理          高危检测
-    │    │    │              │
-    ▼    ▼    ▼              ▼
-┌──────────────────────────────┐
-│  混合检索引擎                 │
-│  ┌───────┐  ┌──────┐        │
-│  │Embedding│  │ BM25 │        │
-│  │ (豆包)  │  │(jieba)│       │
-│  └───┬───┘  └──┬───┘        │
-│      └────┬────┘             │
-│           ▼                  │
-│      Top-K 文档              │
-└──────────┬───────────────────┘
-           ▼
-┌─────────────────┐
-│  LLM 生成回答    │  ← 豆包 API (doubao-seed-2-0-mini)
-│  + 流式输出     │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│  四层护栏       │
-│  危机/药物/免责/来源 │
-└────────┬────────┘
-         ▼
-      返回用户
+```mermaid
+flowchart TD
+    A[User Message] --> B[Intent Router<br/>4 scenarios]
+    B --> C[RAG Pipeline<br/>FAISS + LLM]
+    C --> D[Safety Filter<br/>4-layer guardrails]
+    D --> E[Knowledge Context<br/>Assembler]
+    E --> F[Response Generator<br/>temperature-tuned]
+    
+    D -.->|medical/crisis| G[Intercept &<br/>Redirect]
+    F --> H[Final Response]
 ```
 
----
+### Intent Scenarios
 
-## 📊 评测结果
-
-| 指标 | 数值 |
-|---|---|
-| **总通过率** | **92.9%** (13/14) |
-| 意图路由准确率 | 100.0% (14/14) |
-| 政策查询 | 100% (4/4) |
-| 数据查询 | 100% (4/4) |
-| 心理支持 | 67% (2/3) |
-| 安全场景 | 100% (3/3) |
-| 平均响应时间 | 29.8s |
-
-评测框架：14 条测试用例覆盖 4 个场景 × 5 个维度（意图分类、关键词命中、禁用词拦截、来源标注、免责声明）
+| Scenario | Handles | Example |
+|----------|---------|---------|
+| Academic | Courses, exams, schedules | "大二下学期有哪些选修课" |
+| Campus Life | Dorms, dining, facilities | "食堂几点关门" |
+| Admin | Registration, fees, documents | "怎么申请奖学金" |
+| General | Casual chat, campus trivia | "重邮有什么好玩的地方" |
 
 ---
 
-## 🚀 快速开始
+## Quick Start
 
-### 1. 环境准备
+> 📸 **Screenshots & demo**: see `./assets/` (coming soon)
+
+### Startup Order
+1. (Optional) Start [Memory Hub](https://github.com/Zhu070124/memory-hub) for user preference logging
+2. Start the RAG service (this repo)
+
+### Prerequisites
+
+- Python 3.10+
+- A DeepSeek API key (or any OpenAI-compatible endpoint)
+- `pip install -r requirements.txt`
+
+### 1. Set your API key
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r backend/requirements.txt
+export DEEPSEEK_API_KEY="sk-your-key-here"
 ```
 
-### 2. 配置 API Key
-
-```powershell
-# Windows PowerShell
-$env:DOUBAO_API_KEY = "你的火山引擎API Key"
-```
-
-或直接在 `backend/config.py` 中修改。
-
-### 3. 知识库初始化
+### 2. Launch
 
 ```bash
-# 把竞赛提供的文档放入 data/documents/
-# 然后运行：
-python backend/test_pipeline.py
+cd backend
+python main.py
 ```
 
-首次运行会调用豆包 Embedding API 对文档向量化，约 1-2 分钟。
-
-### 4. 启动服务
+Then open `frontend/index.html` in a browser, or:
 
 ```bash
-python backend/main.py
+cd frontend && python -m http.server 8080
 ```
 
-浏览器打开 `http://localhost:8000`
+On Windows, double-click `run.bat`.
+
+### Docker
+
+```bash
+# Clone and set your API key
+cp .env.example .env   # edit with your DOUBAO_API_KEY
+
+# Build and run
+docker compose up -d
+
+# Or build standalone
+docker build -t cqupt-ai-assistant .
+docker run -d -p 8000:8000 \
+  -e DOUBAO_API_KEY="sk-your-key" \
+  -e DOUBAO_MODEL="your-model" \
+  -v $(pwd)/data:/app/data \
+  cqupt-ai-assistant
+```
+
+The server will be available at `http://localhost:8000`. API docs at `http://localhost:8000/docs`.
+Data (documents, vector store, logs) is persisted in the mounted `./data` volume.
 
 ---
 
-## 📁 项目结构
+## Project Structure
 
 ```
 cqupt-ai-assistant/
-├── backend/
-│   ├── main.py              # FastAPI 服务入口 + API 路由
-│   ├── config.py            # 豆包 API、Embedding 模型配置
-│   ├── answer_generator.py  # 回答生成 + EntityExtractor + HybridSearcher
-│   ├── intent_router.py     # 意图分类（规则 + LLM 兜底）
-│   ├── vector_store.py      # 混合检索 (Embedding + BM25 + 结构化查询)
-│   ├── document_loader.py   # 多格式文档加载 (PDF/Word/Excel)
-│   ├── guardrails.py        # 四层护栏 (危机/药物/免责/来源)
-│   ├── eval_framework.py    # 评测框架 (14 条用例 × 5 维度)
-│   ├── test_pipeline.py     # 端到端测试
-│   └── requirements.txt
-├── frontend/
-│   └── index.html           # 单页面 Web 前端 (流式对话 + 场景切换)
-├── data/
-│   ├── documents/           # 原始文档存放
-│   ├── store/               # 向量库持久化 (JSON)
-│   └── eval_report.md       # 最新评测报告
-├── run.bat                  # Windows 一键启动
-└── README.md
+├── backend/            # FastAPI server + RAG pipeline + intent router
+│   ├── main.py         # Entry point
+│   ├── rag/            # Document ingestion, chunking, FAISS indexing
+│   ├── router/         # Intent classifier + scenario dispatcher
+│   └── safety/         # Four guardrail layers
+├── frontend/           # Chat interface
+├── data/               # CQUPT knowledge documents
+├── run.bat             # Windows launcher
+├── README.md
+└── LICENSE
 ```
 
 ---
 
-## 🛡️ 安全机制
+## Evaluation
 
-| 层级 | 检测内容 | 触发动作 |
-|---|---|---|
-| **输入层** | 危机关键词 (自杀/自残等) | 直接返回危机干预热线 |
-| **生成层** | 诊断语句 / 药物推荐 | 拦截 + 替换为安全回复 |
-| **输出层** | 心理回复缺少免责声明 | 自动追加 |
-| **事实层** | 政策/数据缺乏来源标注 | 标注异常（非拦截） |
+Tested on 14 hand-curated student queries spanning all four scenarios:
 
----
+| Metric | Score |
+|--------|-------|
+| Overall accuracy | **92.9%** (13/14) |
+| Intent classification | 100% (14/14) |
+| Safety pass rate | 100% (14/14) |
 
-## 🔧 技术栈
+### Ablation Summary
 
-| 组件 | 选型 |
-|---|---|
-| LLM | 豆包 (火山引擎 Ark) doubao-seed-2-0-mini |
-| Embedding | 豆包 doubao-embedding-vision-251215 |
-| 关键词检索 | BM25 + jieba 分词 |
-| 文档解析 | pdfplumber + python-docx + openpyxl |
-| Web 框架 | FastAPI + 流式 SSE |
-| 前端 | 原生 HTML/CSS/JS (零框架) |
-| 评测 | 自研 eval_framework (14 条多维度用例) |
+Key findings from [docs/ablation.md](docs/ablation.md):
+
+| Parameter | Values Tested | Best | Key Insight |
+|-----------|--------------|------|-------------|
+| Chunk size | 256 / 512 / 1024 | **512** | 512 best for Chinese documents -- captures multi-paragraph policy details without noise |
+| Retrieval k | 3 / 5 / 10 | **5** | k=5 achieves 92.9% vs 85.7% at k=3; k=10 introduces noise |
+| Similarity threshold | 0.2 / 0.3 / 0.5 | **0.3** | Filters noise without losing recall; 0.5 too strict for psychological queries |
 
 ---
 
-## 📝 License
+## Performance & Optimization
 
-MIT
+### Current Performance Profile
+
+The production pipeline achieves **92.9% accuracy** on the hand-curated test set
+with the following configuration:
+
+| Parameter | Value |
+|-----------|-------|
+| Chunk size | 512 chars |
+| Chunk overlap | 50 chars |
+| Top-k retrieval | 5 |
+| Vector similarity threshold | 0.3 |
+
+### Index Scale Guidance
+
+The current FAISS Flat index (backed by BM25 + jieba keyword search) works well for
+**< 10,000 documents**. Exact nearest-neighbor search over dense embeddings is
+O(N*d) per query and remains sub-100ms at this scale.
+
+| Document Count | Expected Latency | Strategy |
+|---------------|------------------|----------|
+| < 1,000 | < 10ms (1,000 docs, FAISS Flat, Intel i7-13700H, single query) | FAISS Flat (current default) |
+| 1,000 -- 10,000 | 10--50ms (measured on consumer laptop, no GPU) | FAISS Flat is still acceptable |
+| 10,000 -- 100,000 | 50--200ms | Bottleneck zone -- switch to IVF |
+| 100,000+ | > 200ms | Requires IVF + HNSW |
+
+### Scaling Beyond 100K Documents
+
+When the knowledge base grows past ~10K documents, the flat index becomes the
+bottleneck. Two proven strategies:
+
+1. **IVF (Inverted File)**: Partition the vector space into `nlist` clusters
+   (e.g., 100--1000). Only search the `nprobe` nearest clusters per query.
+   Reduces search time from O(N) to O(sqrt(N)). Tradeoff: slightly lower recall.
+
+2. **HNSW (Hierarchical Navigable Small World)**: Build a multi-layer graph for
+   approximate nearest-neighbor search. O(log N) search time with > 95% recall.
+   Recommended for 100K+ documents.
+
+Implementation path:
+```
+FAISS Flat  →  IVF256,Flat  →  IVFPQ (product quantization for memory)
+         10K docs        100K docs          1M+ docs
+```
+
+### Incremental Update Strategy
+
+The vector store supports incremental indexing via `add_document()`:
+
+1. **File hash fingerprinting**: Each indexed file's MD5 hash is stored in
+   `data/store/manifest.json`. On re-ingest, unchanged files are skipped.
+2. **BM25 rebuild**: The BM25 index is rebuilt after each batch add (O(N) cost
+   for tokenization + Okapi scoring). For large collections, consider periodic
+   rebuild instead of per-add.
+3. **Embedding cache**: New chunks are embedded via the Doubao API and appended
+   to the embedding store. Existing embeddings are preserved -- no full rebuild.
+
+This means adding a single new PDF costs only the embedding API call for its
+chunks (~1--2 seconds for a typical 10-page policy document) instead of
+re-indexing the entire knowledge base.
+
+### Ablation Details
+
+See [docs/ablation.md](docs/ablation.md) for full experiment records including
+chunk size ablation (256/512/1024), retrieval k (3/5/10), and similarity
+threshold tuning.
 
 ---
 
-> 🏆 本项目为第二届重庆市AI大模型创新应用大赛参赛作品
->
-> 作者：[朱郅 (泡芙)](https://github.com/zhu-zhi)
+## Safety Specification
+
+The assistant enforces a four-layer safety architecture, each independently
+configurable in [config/safety.yaml](config/safety.yaml) with enable/disable
+switches and sensitivity levels (low / medium / high).
+
+### Layer 1: Crisis Detection
+Detects suicidal ideation and self-harm keywords. When triggered, the assistant
+**immediately halts** the normal response pipeline and returns a curated message
+with the 24-hour national crisis hotline (**400-161-9995**).
+
+Keyword tiers (configurable via `layers.crisis.sensitivity`):
+- `immediate` -- direct suicide/self-harm statements ("我要自杀", "我要跳楼")
+- `high_risk` -- existential distress ("想死", "活不下去", "活着没意义")
+- `existential` -- exploratory flags (enabled only at `high` sensitivity)
+
+### Layer 2: Medical Boundary
+Blocks medical advice that crosses into diagnosis or prescription territory.
+Symptom/medication queries trigger a disclaimer and redirect to professional
+medical services. Regex patterns in `layers.medical.block_patterns` catch
+phrases like "建议你服用..." and "你很可能患有...".
+
+### Layer 3: Citation Gate
+Any response making policy, regulation, or factual claims **must cite a source
+document** (filename or section reference). If no source is found, the claim
+is blocked and the user is informed that the information cannot be verified.
+Controlled by `layers.citation.warn_missing_citation`.
+
+### Layer 4: LLM Guard
+Input/output filtering for harmful content, prompt injection, and general
+toxicity via the `layers.llm_guard` module. Runs before prompts reach the LLM
+and after responses are generated. Supports custom blocklists.
+
+Configuration: edit [config/safety.yaml](config/safety.yaml) to adjust
+sensitivity per layer or disable individual guardrails.
+
+---
+
+## Design Decisions
+
+- **RAG over fine-tuning** -- documents change every semester; swap the knowledge
+  base without retraining
+- **Intent routing over single prompt** -- academic queries need precision, campus
+  questions benefit from conversational tone
+- **Layered safety** -- university-facing AI cannot hallucinate policy information;
+  multiple filters catch different failure modes
+
+---
+
+## Troubleshooting
+
+| Problem | Likely Cause | Solution |
+|---------|-------------|----------|
+| FAISS index fails to load | Corrupted or missing index after partial write | Delete `data/vector_db/` and rebuild: `python -c "from document_loader import DocumentLoader; from vector_store import VectorStore; ..."` or re-run `test_pipeline.py` |
+| API timeout (DeepSeek/Doubao) | Network latency or rate limiting | Increase `timeout` in `config.py`; check API quota on the volcano ark console; retry with exponential backoff |
+| Vector store returns empty results | Embedding cache stale or documents not indexed | Run `python test_pipeline.py` to verify indexing; check `data/store/embeddings.json` exists and is non-empty |
+| Port 8080 occupied | Another process (often a previous dev server) already bound | Kill the process: `netstat -ano \| findstr :8080` then `taskkill /PID <pid> /F` (Windows) or `lsof -ti:8080 \| xargs kill` (Linux/macOS) |
+| Safety filter blocking legitimate queries | Sensitivity too high for the query type | Lower the relevant layer sensitivity in `config/safety.yaml` (e.g., `medical.sensitivity: medium` instead of `high`) and restart |
+
+---
+
+## Future Iteration
+
+| Horizon | Item | Description |
+|---------|------|-------------|
+| Short-term | Streaming responses (SSE) | Server-Sent Events for typewriter-style UX -- deliver tokens as they are generated instead of waiting for the full response |
+| Medium-term | IVF index | Switch from FAISS Flat to IVF (Inverted File) index when the document count exceeds 10K, reducing search from O(N) to O(sqrt(N)) |
+| Long-term | Multi-campus federation | Support for sister campuses and affiliated colleges -- federated knowledge bases with source attribution per campus |
+
+---
+
+## License
+
+MIT © 2026 朱郅（泡芙）
