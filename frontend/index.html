@@ -184,11 +184,13 @@
 
   /* Sources */
   .sources {
-    margin-top: 8px;
+    margin-top: 12px;
     padding-top: 8px;
     border-top: 1px solid var(--border);
     font-size: 12px;
-    color: var(--text-muted);
+    color: #94a3b8;
+    font-style: italic;
+    line-height: 1.6;
   }
   .sources .src-item {
     display: flex;
@@ -196,20 +198,20 @@
     align-items: baseline;
   }
   .sources .src-name {
-    font-weight: 600;
-    color: var(--primary);
+    font-weight: 500;
+    color: #94a3b8;
     cursor: pointer;
   }
 
   /* Disclaimer */
   .disclaimer {
-    margin-top: 8px;
+    margin-top: 12px;
     padding: 8px 12px;
-    background: #fef3c7;
-    border-left: 3px solid #f59e0b;
-    border-radius: 4px;
     font-size: 12px;
-    color: #92400e;
+    color: #94a3b8;
+    font-style: italic;
+    border-left: 2px solid #cbd5e1;
+    line-height: 1.6;
   }
 
   /* Intent tag */
@@ -367,9 +369,9 @@
         <h2>👋 你好！我是小邮</h2>
         <p>我可以帮你查询就业政策、考研数据，也愿意倾听你的烦恼。</p>
         <div class="hints">
-          <span class="hint-chip">📋 三方协议怎么签？</span>
-          <span class="hint-chip">📊 去年计算机分数线？</span>
-          <span class="hint-chip">💬 最近学习压力很大</span>
+          <span class="hint-chip" data-q="三方协议怎么签？需要注意什么？">📋 三方协议怎么签？</span>
+          <span class="hint-chip" data-q="去年计算机分数线多少？">📊 去年计算机分数线？</span>
+          <span class="hint-chip" data-q="最近学习压力很大">💬 最近学习压力很大</span>
         </div>
       </div>
     </div>
@@ -400,6 +402,8 @@
 const API_BASE = '/api';
 let currentScene = 'policy';
 let chatHistory = [];  // 对话历史 [{role, content}]
+let isSending = false;  // 防并发请求
+let renderScheduled = false;  // 流式渲染节流
 
 // === Scene switching ===
 document.querySelectorAll('.tab[data-scene]').forEach(tab => {
@@ -418,10 +422,11 @@ document.querySelectorAll('.quick-q').forEach(btn => {
 });
 
 document.querySelectorAll('.hint-chip').forEach(chip => {
-  chip.addEventListener('click', () => quickAsk(chip.textContent.replace(/^[^\s]+\s/, '')));
+  chip.addEventListener('click', () => quickAsk(chip.dataset.q || chip.textContent.replace(/^[^\s]+\s/, '')));
 });
 
 function quickAsk(q) {
+  if (isSending) return;
   document.getElementById('queryInput').value = q;
   sendMessage();
 }
@@ -430,8 +435,9 @@ function quickAsk(q) {
 async function sendMessage() {
   const input = document.getElementById('queryInput');
   const query = input.value.trim();
-  if (!query) return;
+  if (!query || isSending) return;
 
+  isSending = true;
   const btn = document.getElementById('sendBtn');
   input.value = '';
   btn.disabled = true;
@@ -448,40 +454,74 @@ async function sendMessage() {
   const bubble = addMessage('assistant', '', true);
   const bubbleEl = bubble.querySelector('.bubble');
 
+  let reader = null;
+  let fullText = '';
+  let rafId = null;
+
+  // AbortController for stream timeout (60s)
+  const controller = new AbortController();
+  const idleTimer = setTimeout(() => controller.abort(), 60000);
+
   try {
     const resp = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, history: chatHistory.slice(0, -1) }),
+      signal: controller.signal,
+      body: JSON.stringify({
+        query,
+        scene: currentScene,
+        history: chatHistory.slice(0, -1),
+      }),
     });
 
     if (!resp.ok) throw new Error('请求失败');
+    clearTimeout(idleTimer);
 
-    // Stream read
-    const reader = resp.body.getReader();
+    // Stream read with throttled rendering
+    reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let fullText = '';
+    const msgs = document.getElementById('messages');
+    renderScheduled = false;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      fullText += chunk;
-      bubbleEl.innerHTML = markdownToHtml(fullText);
-      // Auto-scroll
-      const msgs = document.getElementById('messages');
-      msgs.scrollTop = msgs.scrollHeight;
+      fullText += decoder.decode(value, { stream: true });
+      if (!renderScheduled) {
+        renderScheduled = true;
+        rafId = requestAnimationFrame(() => {
+          bubbleEl.innerHTML = markdownToHtml(fullText);
+          msgs.scrollTop = msgs.scrollHeight;
+          renderScheduled = false;
+        });
+      }
     }
+    cancelAnimationFrame(rafId);
+    rafId = null;
+    // Final render to catch any remaining content
+    bubbleEl.innerHTML = markdownToHtml(fullText);
+    msgs.scrollTop = msgs.scrollHeight;
 
     // Record assistant response in history
     chatHistory.push({ role: 'assistant', content: fullText });
-    // Keep only last 12 messages (6 rounds)
     if (chatHistory.length > 12) chatHistory = chatHistory.slice(-12);
 
   } catch (e) {
-    bubbleEl.innerHTML = `⚠️ 出错了：${e.message}`;
+    clearTimeout(idleTimer);
+    cancelAnimationFrame(rafId);
+    renderScheduled = false;
+    try { reader && reader.cancel(); } catch (_) {}
+    if (fullText) {
+      bubbleEl.innerHTML = markdownToHtml(fullText) +
+        `<div class="disclaimer">⚠️ 连接中断：${escapeHtml(e.message)}</div>`;
+      chatHistory.push({ role: 'assistant', content: fullText });
+    } else {
+      chatHistory.pop();
+      bubbleEl.textContent = `⚠️ 出错了：${escapeHtml(e.message)}`;
+    }
   }
 
+  isSending = false;
   btn.disabled = false;
   input.focus();
 }
@@ -554,18 +594,23 @@ function markdownToHtml(text) {
   // Bold
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-  // Lists
-  html = html.replace(/^[\-\*]\s+(.+)$/gm, '<li>$1</li>');
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  // Split into blocks first, convert lists per block
+  const blocks = html.split(/\n{2,}/);
+  html = blocks.map(block => {
+    const lines = block.trim().split('\n');
+    if (lines.every(l => /^[\-\*]\s+/.test(l))) {
+      return '<ul>' + lines.map(l => `<li>${l.replace(/^[\-\*]\s+/, '')}</li>`).join('') + '</ul>';
+    }
+    if (lines.every(l => /^\d+\.\s+/.test(l))) {
+      return '<ol>' + lines.map(l => `<li>${l.replace(/^\d+\.\s+/, '')}</li>`).join('') + '</ol>';
+    }
+    return '<p>' + block.trim().replace(/\n/g, '<br>') + '</p>';
+  }).join('\n');
 
   // Numbered steps
   html = html.replace(/步骤(\d+)/g, '<strong>步骤$1</strong>');
 
-  // Line breaks
-  html = html.replace(/\n\n/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-
-  return '<p>' + html + '</p>';
+  return html;
 }
 
 function escapeHtml(text) {
@@ -576,9 +621,9 @@ function escapeHtml(text) {
 
 // === Enter to send ===
 document.getElementById('queryInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
     e.preventDefault();
-    sendMessage();
+    if (!isSending) sendMessage();
   }
 });
 

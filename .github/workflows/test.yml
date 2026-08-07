@@ -8,8 +8,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install fastapi uvicorn httpx pyyaml python-dotenv bcrypt pyjwt
-      - run: python -c "compile(open('backend/main.py').read(), 'backend/main.py', 'exec'); print('OK: main.py')"
-      - run: python -c "compile(open('backend/guardrails.py').read(), 'backend/guardrails.py', 'exec'); print('OK: guardrails.py')"
-      - run: python -c "compile(open('backend/vector_store.py').read(), 'backend/vector_store.py', 'exec'); print('OK: vector_store.py')"
-      - run: python -c "compile(open('backend/auth.py').read(), 'backend/auth.py', 'exec'); print('OK: auth.py')"
+      - run: pip install pyyaml fastapi
+      - run: python -c "compile(open('backend/main.py', encoding='utf-8').read(), 'main.py', 'exec'); print('main.py OK')"
+      - run: python -c "compile(open('backend/intent_router.py', encoding='utf-8').read(), 'intent_router.py', 'exec'); print('intent_router.py OK')"
+      - run: python -c "compile(open('backend/guardrails.py', encoding='utf-8').read(), 'guardrails.py', 'exec'); print('guardrails.py OK')"
+      - run: python -c "compile(open('backend/auth.py', encoding='utf-8').read(), 'auth.py', 'exec'); print('auth.py OK')"

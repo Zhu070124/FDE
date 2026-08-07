@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "sqlite": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-sqlite", "--db", "data/app.db"]
+    },
+    "feishu-doc": {
+      "command": "npx",
+      "args": ["-y", "@dasaying/feishu-doc-mcp"],
+      "env": {
+        "FEISHU_APP_ID": "your-feishu-app-id",
+        "FEISHU_APP_SECRET": "your-feishu-app-secret"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-github-token"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
