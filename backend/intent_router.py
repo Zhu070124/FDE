@@ -1,9 +1,15 @@
 """
 意图路由器：判断用户问题是 政策查询 / 数据查询 / 心理支持
+
+关键词从 config/safety.yaml 的 intent_router 节点动态加载，
+无需改代码即可扩展场景。
 """
 import re
+import os
 from enum import Enum
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
+
+import yaml
 
 
 class Intent(Enum):
@@ -12,31 +18,33 @@ class Intent(Enum):
     PSYCHOLOGICAL = "psychological"  # 心理支持——共情+免责
 
 
-# === 规则层：关键词+正则快速匹配 ===
-POLICY_KEYWORDS = [
-    "政策", "规定", "流程", "条件", "怎么申请", "需要什么材料",
-    "三方协议", "报到证", "档案", "户口", "报到", "派遣",
-    "学费", "奖学金", "助学金", "助学贷款", "困难补助",
-    "国家规定", "学校规定", "文件", "通知", "要求",
-    "毕业", "就业", "创业", "补贴", "税收", "优惠",
-    "考研报名", "考研条件", "报考资格", "招生简章",
-]
+# === 从 YAML 动态加载关键词（带硬编码兜底） ===
+def _load_intent_config():
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "safety.yaml")
+    defaults = {
+        "policy_keywords": ["政策", "规定", "奖学金", "助学金"],
+        "data_keywords": ["分数线", "报录比", "录取人数"],
+        "psychological_keywords": ["压力", "焦虑", "抑郁", "失眠"],
+        "psychological_crisis": ["不想活", "活不下去"],
+    }
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        ir = cfg.get("intent_router", {}) if cfg else {}
+        return {
+            "policy_keywords": ir.get("policy_keywords", defaults["policy_keywords"]),
+            "data_keywords": ir.get("data_keywords", defaults["data_keywords"]),
+            "psychological_keywords": ir.get("psychological_keywords", defaults["psychological_keywords"]),
+            "psychological_crisis": ir.get("psychological_crisis", defaults["psychological_crisis"]),
+        }
+    except Exception:
+        return defaults
 
-DATA_KEYWORDS = [
-    "分数线", "报录比", "录取人数", "多少人", "多少分",
-    "排名", "第几", "多少名", "比例", "百分比",
-    "去年", "今年", "往年", "历年",
-    "哪个学校", "哪个专业", "计算机", "金融", "会计",
-]
-
-PSYCHOLOGICAL_KEYWORDS = [
-    "压力", "焦虑", "抑郁", "失眠", "难过", "崩溃",
-    "不开心", "怎么办", "迷茫", "不知道", "没动力",
-    "心烦", "烦躁", "累", "撑不住", "想哭", "孤独",
-    "精神", "情绪", "心理", "心态",
-    "社恐", "自卑", "内卷", "躺平",
-    "人际关系", "室友", "失恋", "分手", "孤独",
-]
+_intent_cfg = _load_intent_config()
+POLICY_KEYWORDS = _intent_cfg["policy_keywords"]
+DATA_KEYWORDS = _intent_cfg["data_keywords"]
+PSYCHOLOGICAL_KEYWORDS = _intent_cfg["psychological_keywords"]
+PSYCHOLOGICAL_CRISIS = _intent_cfg["psychological_crisis"]
 
 # === 正则模式 ===
 DATA_PATTERNS = [
@@ -52,8 +60,8 @@ POLICY_PATTERNS = [
 
 PSYCHOLOGICAL_PATTERNS = [
     re.compile(r"我.*(?:压力|焦虑|难过|累|失眠|崩溃|不开心)"),
-    re.compile(r"(?:怎么办|帮帮我|救救我)"),
-]
+    re.compile(r"(?:帮帮我|救救我)"),
+]  # 注：移除了"怎么办"（普通政策/数据问题的合法用词）
 
 
 class IntentRouter:
@@ -68,8 +76,11 @@ class IntentRouter:
 
 注意：提到"考研"但问的是数字/分数线→data；提到"考研"但问的是情绪/压力→psychological。
 
-学生问题：{query}
-类别："""
+<query>
+{query}
+</query>
+
+类别（仅回复 policy / data / psychological 三个词之一）："""
 
     def __init__(self, use_llm: bool = True, llm_fn=None):
         self.use_llm = use_llm
@@ -103,8 +114,7 @@ class IntentRouter:
         # "助学贷款能贷多少" → policy（贷款是政策概念），不是data
         # "奖学金多少钱" → policy，不是data
         policy_strong_signals = ["贷款", "助学金", "奖学金", "补助", "减免", "三方协议", "报到证"]
-        data_weak_signals = ["多少", "多少钱", "能贷多少"]
-        if any(s in query for s in policy_strong_signals) and any(s in query for s in data_weak_signals):
+        if any(s in query for s in policy_strong_signals) and "多少" in query:
             policy_score += 0.4  # 强行拉到政策侧
 
         # === 第四步：安全检查（高危关键词直接判定） ===
@@ -112,50 +122,100 @@ class IntentRouter:
         if any(kw in query for kw in crisis_keywords):
             return Intent.PSYCHOLOGICAL, 1.0
 
-        # === 决策 ===
+        # === 决策（平局时心理优先——安全侧倾斜） ===
         scores = {
             Intent.POLICY: policy_score,
             Intent.DATA: data_score,
             Intent.PSYCHOLOGICAL: psych_score,
         }
-        best_intent = max(scores, key=scores.get)
+        # 平局打破：psychological > policy > data
+        best_intent = max(scores, key=lambda i: (scores[i], i == Intent.PSYCHOLOGICAL, i == Intent.POLICY))
         best_score = scores[best_intent]
         total = sum(scores.values())
 
-        # 归一化置信度
+        # 归一化置信度 + 绝对证据门槛
         if total > 0:
             confidence = best_score / total
         else:
             confidence = 0.33
+        # 绝对证据弱 → 压低置信度
+        if best_score < 0.15:
+            confidence = min(confidence, 0.5)
 
-        # === LLM兜底：规则置信度低或分数接近时用LLM ===
+        # === LLM兜底：规则置信度低时用LLM ===
         if self.use_llm and self.llm_fn and (confidence < 0.6 or best_score < 0.15):
             try:
                 llm_intent = self._llm_classify(query)
                 if llm_intent:
                     return llm_intent, 0.8
             except Exception:
-                pass  # LLM调用失败，用规则结果
+                import logging
+                logging.getLogger(__name__).warning(
+                    "LLM intent classification failed, using rule-based result", exc_info=True
+                )
 
-        # 最低置信度兜底
+        # 最低置信度兜底 → 政策（覆盖面最广），非心理
         if best_score < 0.1:
             return Intent.POLICY, 0.3
 
         return best_intent, min(confidence, 0.99)
 
+    def classify_multi(self, query: str, threshold: float = 0.15) -> List[Tuple[Intent, float]]:
+        """
+        多标签分类：返回所有置信度高于阈值的意图
+        "考研和就业怎么选" → [(DATA, 0.5), (PSYCHOLOGICAL, 0.4)]
+        """
+        # 复用规则层的计分逻辑（不调LLM，保持轻量）
+        policy_score = self._keyword_score(query, POLICY_KEYWORDS)
+        data_score = self._keyword_score(query, DATA_KEYWORDS)
+        psych_score = self._keyword_score(query, PSYCHOLOGICAL_KEYWORDS)
+
+        for pattern in DATA_PATTERNS:
+            if pattern.search(query):
+                data_score += 0.2
+        for pattern in POLICY_PATTERNS:
+            if pattern.search(query):
+                policy_score += 0.2
+        for pattern in PSYCHOLOGICAL_PATTERNS:
+            if pattern.search(query):
+                psych_score += 0.3
+
+        psych_score *= 1.2
+
+        # 危机关键词 → 心理分数强制拉高
+        if any(kw in query for kw in PSYCHOLOGICAL_CRISIS):
+            psych_score = max(psych_score, 1.0)
+
+        if any(s in query for s in ["贷款", "助学金", "奖学金", "补助", "减免", "三方协议", "报到证"]) and "多少" in query:
+            policy_score += 0.4
+
+        scores = [
+            (Intent.POLICY, policy_score),
+            (Intent.DATA, data_score),
+            (Intent.PSYCHOLOGICAL, psych_score),
+        ]
+
+        results = [(intent, score) for intent, score in scores if score >= threshold]
+        if not results:
+            return [(Intent.POLICY, 0.3)]
+
+        # 归一化
+        total = sum(s for _, s in results)
+        return [(i, s / total) for i, s in results]
+
     def _llm_classify(self, query: str) -> Optional[Intent]:
-        """调用LLM做意图分类（轻量版）"""
+        """调用LLM做意图分类（轻量版）——严格解析，防止子串误匹配"""
         prompt = self.CLASSIFY_PROMPT.format(query=query)
         result = self.llm_fn(prompt, temperature=0.0, max_tokens=10)
-        result = result.strip().lower()
+        result = result.strip().lower().replace("。", "").replace(".", "")
 
-        if "psychological" in result or "心理" in result:
-            return Intent.PSYCHOLOGICAL
-        elif "data" in result or "数据" in result:
-            return Intent.DATA
-        elif "policy" in result or "政策" in result:
-            return Intent.POLICY
-        return None
+        # 严格匹配：只接受精确的三个值
+        mapping = {
+            "policy": Intent.POLICY,
+            "data": Intent.DATA,
+            "psychological": Intent.PSYCHOLOGICAL,
+        }
+        return mapping.get(result)
 
     def _keyword_score(self, query: str, keywords: list) -> float:
         """关键词匹配得分"""

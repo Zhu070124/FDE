@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+.git/
+.gitignore
+
+# Data directories (mounted at runtime)
+data/store/
+data/logs/
+data/reflections/
+data/vector_db/
+data/app.db
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Docs we don't need in the image
+docs/

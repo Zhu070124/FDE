@@ -7,16 +7,89 @@ dist/
 build/
 venv/
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.ipynb_checkpoints/
+*.log
 
-# Data (contains competition-provided docs and embeddings)
-data/documents/*.docx
-data/documents/*.xlsx
-data/documents/*.pdf
-data/store/*.json
+# Data — exclude contents, whitelist README
+data/documents/*
+data/store/*
+data/reflections/*
+!data/documents/README.md
+!data/store/.gitkeep
+!data/reflections/.gitkeep
 
-# API keys
-.env
+# Model & embedding artifacts (anchored to known output dirs)
+models/**/*.bin
+models/**/*.pt
+models/**/*.pth
+models/**/*.ckpt
+models/**/*.onnx
+checkpoints/**/*.ckpt
+outputs/**/*.h5
+outputs/**/*.hdf5
+outputs/**/*.faiss
+outputs/**/*.index
+outputs/**/*.safetensors
+outputs/**/*.joblib
+outputs/**/*.npy
+outputs/**/*.npz
+
+# Secrets & credentials
 *.env
+*.env.*
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+*.keystore
+*.jks
+id_rsa
+id_ed25519
+id_dsa
+id_ecdsa
+*credentials*.json
+*credentials*.yaml
+*credentials*.yml
+*secret*.json
+*secret*.yaml
+*secret*.yml
+*service*account*.json
+secrets.toml
+credentials
+*access_token*.json
+*refresh_token*.json
+*auth-token*.json
+!tokenizer.json
+.netrc
+.npmrc
+.pypirc
+.envrc
+
+# Cloud credentials
+.aws/
+.ssh/
+.gcloud/
+.azure/
+.kube/
+.docker/config.json
+.terraform/
+*.tfvars
+!example.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.backup
 
 # IDE
 .vscode/

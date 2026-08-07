@@ -138,15 +138,18 @@ class DocumentLoader:
 
     def load_directory(self, dir_path: Path) -> List[DocumentChunk]:
         """批量加载目录下所有文档"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         all_chunks = []
         for file_path in sorted(dir_path.iterdir()):
             if file_path.suffix.lower() in (".pdf", ".docx", ".doc", ".xlsx", ".xls"):
                 try:
                     chunks = self.load_file(file_path)
                     all_chunks.extend(chunks)
-                    print(f"  ✅ {file_path.name} → {len(chunks)} chunks")
+                    logger.info("  Loaded %s → %d chunks", file_path.name, len(chunks))
                 except Exception as e:
-                    print(f"  ❌ {file_path.name}: {e}")
+                    logger.error("  Failed %s: %s", file_path.name, e)
         return all_chunks
 
     # ===== 内部分块 =====

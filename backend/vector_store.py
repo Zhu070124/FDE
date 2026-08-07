@@ -1,9 +1,12 @@
 """
 检索存储：豆包Embedding API（主）+ BM25关键词（兜底）
+支持增量索引 + manifest追踪
 """
 import json
 import time
 import re
+import hashlib
+import logging
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
@@ -14,6 +17,8 @@ from rank_bm25 import BM25Okapi
 
 from document_loader import DocumentChunk
 import config
+
+logger = logging.getLogger(__name__)
 
 
 class DoubaoEmbedder:
@@ -48,7 +53,6 @@ class DoubaoEmbedder:
                         )
                         resp.raise_for_status()
                         data = resp.json()
-                        # multimodal返回 data.embedding（dict非list）
                         emb = data["data"]["embedding"]
                         all_embeddings.append(emb)
                         break
@@ -59,7 +63,7 @@ class DoubaoEmbedder:
 
                 # 进度提示
                 if (i + 1) % 10 == 0:
-                    print(f"    Embedded {i + 1}/{len(texts)}...")
+                    logger.info("Embedded %d/%d...", i + 1, len(texts))
 
         return all_embeddings
 
@@ -81,6 +85,7 @@ class VectorStore:
     - 豆包Embedding：语义向量检索
     - BM25：关键词检索兜底
     - 数据自动持久化到JSON
+    - 增量索引 + manifest追踪
     """
 
     def __init__(self, persist_dir: Path = None):
@@ -92,15 +97,20 @@ class VectorStore:
         self.embeddings: Dict[str, List[List[float]]] = {}   # 向量存储
         self._init_collections()
 
+        # Manifest for incremental indexing
+        self.manifest_path = self.persist_dir / "manifest.json"
+        self.manifest: Dict[str, dict] = {}
+        self._load_manifest()
+
         # 尝试加载豆包Embedder
         self.embedder = None
         self.embedding_enabled = False
         try:
             self.embedder = DoubaoEmbedder()
             self.embedding_enabled = True
-            print(f"  Embedding: doubao-embedding-vision ({self.embedder.dim}d)")
+            logger.info("Embedding: doubao-embedding-vision (%dd)", self.embedder.dim)
         except Exception as e:
-            print(f"  Embedding disabled (API error: {e}), using BM25 only")
+            logger.warning("Embedding disabled (API error: %s), using BM25 only", e)
 
         self._load_from_disk()
 
@@ -108,6 +118,139 @@ class VectorStore:
         for name in ["policy", "exam", "psychology"]:
             if name not in self.collections:
                 self.collections[name] = []
+
+    # ===== Manifest (incremental tracking) =====
+    def _load_manifest(self):
+        """Load indexed-file manifest from disk."""
+        try:
+            if self.manifest_path.exists():
+                with open(self.manifest_path, "r", encoding="utf-8") as f:
+                    self.manifest = json.load(f)
+                logger.info("Loaded manifest: %d tracked files", len(self.manifest))
+            else:
+                self.manifest = {}
+        except Exception as e:
+            logger.error("Failed to load manifest: %s", e)
+            self.manifest = {}
+
+    def _save_manifest(self):
+        """Persist manifest to disk."""
+        try:
+            with open(self.manifest_path, "w", encoding="utf-8") as f:
+                json.dump(self.manifest, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error("Failed to save manifest: %s", e)
+
+    @staticmethod
+    def _file_hash(file_path: Path) -> str:
+        """Compute MD5 hash of a file for change detection."""
+        try:
+            hasher = hashlib.md5()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _content_hash(content: str) -> str:
+        """Compute MD5 hash of content string."""
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    # ===== Add Document (incremental) =====
+    def add_document(
+        self,
+        file_path: str,
+        collection_name: str,
+        force: bool = False,
+    ) -> dict:
+        """
+        Incrementally index a single document file.
+        Skips if unchanged (tracked by file hash in manifest).
+
+        Args:
+            file_path: Path to the document file.
+            collection_name: Target collection (policy/exam/psychology).
+            force: If True, re-index even if unchanged.
+
+        Returns:
+            dict with status, chunks_added, and skipped reason if any.
+        """
+        path = Path(file_path)
+        if not path.exists():
+            msg = f"File not found: {file_path}"
+            logger.error(msg)
+            return {"status": "error", "message": msg}
+
+        file_key = str(path.absolute())
+        file_hash = self._file_hash(path)
+
+        # Check manifest — skip if unchanged
+        if not force and file_key in self.manifest:
+            cached = self.manifest[file_key]
+            if cached.get("hash") == file_hash:
+                logger.info("Skipping unchanged file: %s (hash: %s)", path.name, file_hash[:8])
+                return {
+                    "status": "skipped",
+                    "message": f"File unchanged: {path.name}",
+                    "hash": file_hash[:8],
+                }
+
+        # Load and chunk
+        try:
+            from document_loader import DocumentLoader
+            loader = DocumentLoader(
+                chunk_size=config.CHUNK_SIZE,
+                chunk_overlap=config.CHUNK_OVERLAP,
+            )
+            chunks = loader.load_file(path)
+        except Exception as e:
+            logger.exception("Failed to load file %s", path.name)
+            return {"status": "error", "message": f"Failed to load: {e}"}
+
+        if not chunks:
+            return {"status": "warning", "message": f"No chunks extracted from {path.name}", "chunks_added": 0}
+
+        # Add chunks to collection
+        try:
+            self.add_chunks(chunks, collection_name)
+        except Exception as e:
+            logger.exception("Failed to add chunks to collection %s", collection_name)
+            return {"status": "error", "message": f"Failed to index: {e}"}
+
+        # Update manifest
+        self.manifest[file_key] = {
+            "hash": file_hash,
+            "filename": path.name,
+            "collection": collection_name,
+            "chunks": len(chunks),
+            "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._save_manifest()
+
+        logger.info("Indexed %s → %d chunks in '%s'", path.name, len(chunks), collection_name)
+        return {
+            "status": "ok",
+            "filename": path.name,
+            "chunks_added": len(chunks),
+            "collection": collection_name,
+        }
+
+    def get_manifest_status(self) -> dict:
+        """Return manifest summary for admin dashboard."""
+        files_by_collection = defaultdict(list)
+        for file_key, info in self.manifest.items():
+            files_by_collection[info.get("collection", "unknown")].append({
+                "filename": info.get("filename", Path(file_key).name),
+                "chunks": info.get("chunks", 0),
+                "hash": info.get("hash", "")[:8],
+                "indexed_at": info.get("indexed_at", ""),
+            })
+        return {
+            "total_files": len(self.manifest),
+            "by_collection": dict(files_by_collection),
+        }
 
     # ===== Tokenization (BM25用) =====
     def _tokenize(self, text: str) -> List[str]:
@@ -135,7 +278,10 @@ class VectorStore:
         # 2. 重建BM25索引
         tokenized = [d["tokens"] for d in collection]
         if tokenized:
-            self.bm25_indexes[collection_name] = (BM25Okapi(tokenized), collection)
+            try:
+                self.bm25_indexes[collection_name] = (BM25Okapi(tokenized), collection)
+            except Exception as e:
+                logger.error("BM25 index rebuild failed for %s: %s", collection_name, e)
 
         # 3. 豆包向量化（新增/追加）
         if self.embedding_enabled and self.embedder:
@@ -145,9 +291,9 @@ class VectorStore:
                     self.embeddings[collection_name] = []
                 self.embeddings[collection_name].extend(new_embeddings)
             except Exception as e:
-                print(f"  ⚠️ Embedding failed for {collection_name}: {e}")
+                logger.warning("Embedding failed for %s: %s", collection_name, e)
 
-        print(f"  Added {len(chunks)} chunks to '{collection_name}' (total: {len(collection)})")
+        logger.info("Added %d chunks to '%s' (total: %d)", len(chunks), collection_name, len(collection))
         self._save_to_disk()
 
     # ===== Search =====
@@ -183,42 +329,49 @@ class VectorStore:
                                 "collection": name,
                             }
             except Exception as e:
-                print(f"  ⚠️ Vector search failed: {e}")
+                logger.warning("Vector search failed: %s", e)
 
         # === BM25检索 ===
         query_tokens = self._tokenize(query)
         for name in collection_names:
             if name not in self.bm25_indexes:
                 continue
-            bm25, collection = self.bm25_indexes[name]
-            scores = bm25.get_scores(query_tokens)
-            if max(scores) > 0:
-                for i, score in enumerate(scores):
-                    if score > 0:
-                        key = f"bm25_{name}_{i}"
-                        bm25_results[key] = {
-                            "content": collection[i]["content"],
-                            "metadata": collection[i]["metadata"],
-                            "score": float(score),
-                            "collection": name,
-                        }
+            try:
+                bm25, collection = self.bm25_indexes[name]
+                scores = bm25.get_scores(query_tokens)
+                if max(scores) > 0:
+                    for i, score in enumerate(scores):
+                        if score > 0:
+                            key = f"bm25_{name}_{i}"
+                            bm25_results[key] = {
+                                "content": collection[i]["content"],
+                                "metadata": collection[i]["metadata"],
+                                "score": float(score),
+                                "collection": name,
+                            }
+            except Exception as e:
+                logger.error("BM25 search failed for %s: %s", name, e)
 
         # === 融合：向量优先，BM25补充 ===
         merged = {}
 
-        # 向量结果（归一化后优先）
         for key, doc in vector_results.items():
             merged[key] = doc
 
-        # BM25结果补充（去重）
         for key, doc in bm25_results.items():
             content_key = doc["content"][:80]
             if not any(d["content"][:80] == content_key for d in merged.values()):
-                # BM25分数归一化
                 doc["score"] = doc["score"] * 0.7  # BM25权重稍低
                 merged[key] = doc
 
         results = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
+
+        # 过滤内部元数据
+        results = [
+            r for r in results
+            if r.get("metadata", {}).get("source") != "self-training-reflection"
+            and r.get("metadata", {}).get("type") != "feedback"
+        ]
 
         # 归一化
         if results and results[0]["score"] > 0:
@@ -241,7 +394,6 @@ class VectorStore:
         for doc in collection:
             matched = False
 
-            # 方式1：record JSON精确匹配
             record_str = doc["metadata"].get("record")
             if record_str:
                 try:
@@ -251,7 +403,6 @@ class VectorStore:
                 except json.JSONDecodeError:
                     pass
 
-            # 方式2：content文本模糊匹配
             if not matched:
                 content = doc.get("content", "")
                 if all(str(v) in content for v in filters.values()):
@@ -282,54 +433,72 @@ class VectorStore:
     # ===== 向量工具 =====
     @staticmethod
     def _cosine_similarity(a: List[float], b: List[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
-        return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+        try:
+            dot = sum(x * y for x, y in zip(a, b))
+            norm_a = sum(x * x for x in a) ** 0.5
+            norm_b = sum(x * x for x in b) ** 0.5
+            return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
+        except Exception:
+            return 0.0
 
     # ===== Persistence =====
     def _save_to_disk(self):
         for name, collection in self.collections.items():
-            filepath = self.persist_dir / f"{name}.json"
-            data = [{"content": d["content"], "metadata": d["metadata"]} for d in collection]
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            try:
+                filepath = self.persist_dir / f"{name}.json"
+                data = [{"content": d["content"], "metadata": d["metadata"]} for d in collection]
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error("Failed to save collection %s: %s", name, e)
 
-        # 向量单独存储（较大）
         if self.embeddings:
-            emb_path = self.persist_dir / "embeddings.json"
-            with open(emb_path, "w", encoding="utf-8") as f:
-                json.dump(self.embeddings, f, ensure_ascii=False)
+            try:
+                emb_path = self.persist_dir / "embeddings.json"
+                with open(emb_path, "w", encoding="utf-8") as f:
+                    json.dump(self.embeddings, f, ensure_ascii=False)
+            except Exception as e:
+                logger.error("Failed to save embeddings: %s", e)
 
     def _load_from_disk(self):
         for name in ["policy", "exam", "psychology"]:
             filepath = self.persist_dir / f"{name}.json"
             if filepath.exists():
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                for doc in data:
-                    self.collections[name].append({
-                        "content": doc["content"],
-                        "metadata": doc["metadata"],
-                        "tokens": self._tokenize(doc["content"]),
-                    })
-                if self.collections[name]:
-                    tokenized = [d["tokens"] for d in self.collections[name]]
-                    self.bm25_indexes[name] = (BM25Okapi(tokenized), self.collections[name])
-                print(f"  Loaded {len(data)} docs from {filepath.name}")
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    for doc in data:
+                        self.collections[name].append({
+                            "content": doc["content"],
+                            "metadata": doc["metadata"],
+                            "tokens": self._tokenize(doc["content"]),
+                        })
+                    if self.collections[name]:
+                        tokenized = [d["tokens"] for d in self.collections[name]]
+                        self.bm25_indexes[name] = (BM25Okapi(tokenized), self.collections[name])
+                    logger.info("Loaded %d docs from %s", len(data), filepath.name)
+                except Exception as e:
+                    logger.error("Failed to load collection %s: %s", name, e)
 
-        # 加载向量（如果有）
+        # 加载向量
         emb_path = self.persist_dir / "embeddings.json"
         if emb_path.exists() and self.embedding_enabled:
-            with open(emb_path, "r", encoding="utf-8") as f:
-                self.embeddings = json.load(f)
-            print(f"  Loaded embeddings from disk")
+            try:
+                with open(emb_path, "r", encoding="utf-8") as f:
+                    self.embeddings = json.load(f)
+                logger.info("Loaded embeddings from disk")
+            except Exception as e:
+                logger.error("Failed to load embeddings: %s", e)
 
     def get_stats(self) -> dict:
         return {name: len(coll) for name, coll in self.collections.items()}
 
 
 if __name__ == "__main__":
+    from logger_config import get_logger
+    get_logger(__name__)
+
     vs = VectorStore()
     print(f"Stats: {vs.get_stats()}")
     print(f"Embedding enabled: {vs.embedding_enabled}")
+    print(f"Manifest files: {len(vs.manifest)}")

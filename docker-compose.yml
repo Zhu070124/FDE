@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  cqupt-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cqupt-ai-assistant:latest
+    container_name: cqupt-assistant
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Required — set these in a .env file or directly
+      - DOUBAO_API_KEY=${DOUBAO_API_KEY:-}
+      - DOUBAO_MODEL=${DOUBAO_MODEL:-}
+      - DOUBAO_BASE_URL=${DOUBAO_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}
+      - DOUBAO_EMBEDDING_MODEL=${DOUBAO_EMBEDDING_MODEL:-doubao-embedding-vision-251215}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Mount data directories for persistence
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/api/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

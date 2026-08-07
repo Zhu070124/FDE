@@ -1,0 +1,157 @@
+# CQUPT AI Assistant — Safety Guardrails Configuration
+# Tune per-layer enable/disable, sensitivity, and custom blocklists.
+
+layers:
+  # --- Crisis Detection ---
+  # Three-tier classification: immediate > high_risk > existential
+  crisis:
+    enabled: true
+    # low = only immediate triggers fire; medium = immediate + high_risk;
+    # high = immediate + high_risk + existential exploration flags
+    sensitivity: medium
+    hotline: "400-161-9995"
+    immediate_keywords:
+      - "我要自杀"
+      - "我要跳楼"
+      - "割腕自杀"
+      - "吃安眠药自杀"
+      - "结束生命"
+      - "自残"
+      - "不想活了"
+    high_risk_keywords:
+      - "想死"
+      - "活不下去"
+      - "一了百了"
+      - "活着没意义"
+      - "再见这个世界"
+      - "我走了（永别）"
+
+  # --- Medical Advice Blocking ---
+  medical:
+    enabled: true
+    # high  = strict; medium = warn but don't block; low = log only
+    sensitivity: high
+    blocklist_words: []
+    # Regex patterns that will REJECT the response wholesale
+    block_patterns:
+      - "建议[^。！？\\n]{0,20}服用[^。！？\\n]{0,10}药"
+      - "你(很可能|应该|一定|可能)患有"
+
+  # --- Psychological Disclaimer ---
+  disclaimer:
+    enabled: true
+    # Whether to always append disclaimer to psychological responses
+    auto_append: true
+    text: |
+      > 💚 我只是AI，能陪你聊天，但不能替代真正的心理咨询。
+      如果你觉得需要更专业的帮助，学校心理健康中心随时为你开放，
+      全国心理援助热线 **400-161-9995** 也是24小时免费的。
+
+  # --- LLM Input Guard ---
+  llm_guard:
+    enabled: true
+    sensitivity: medium
+    # Custom blocklist of words/patterns the LLM input guard should catch
+    extra_blocklist: []
+
+  # --- Citation Enforcement ---
+  citation:
+    enabled: true
+    # Whether to warn when policy/data responses lack source citations
+    warn_missing_citation: true
+
+# --- Intent Router Keywords ---
+# Dynamically configurable keywords for fast rule-based intent classification.
+# Add/remove keywords here without touching Python code.
+intent_router:
+  policy_keywords:
+    - "政策"
+    - "规定"
+    - "流程"
+    - "条件"
+    - "怎么申请"
+    - "需要什么材料"
+    - "三方协议"
+    - "报到证"
+    - "档案"
+    - "户口"
+    - "报到"
+    - "派遣"
+    - "学费"
+    - "奖学金"
+    - "助学金"
+    - "助学贷款"
+    - "困难补助"
+    - "国家规定"
+    - "学校规定"
+    - "文件"
+    - "通知"
+    - "要求"
+    - "毕业"
+    - "就业"
+    - "创业"
+    - "补贴"
+    - "税收"
+    - "优惠"
+    - "考研报名"
+    - "考研条件"
+    - "报考资格"
+    - "招生简章"
+  data_keywords:
+    - "分数线"
+    - "报录比"
+    - "录取人数"
+    - "多少人"
+    - "多少分"
+    - "排名"
+    - "第几"
+    - "多少名"
+    - "比例"
+    - "百分比"
+    - "去年"
+    - "今年"
+    - "往年"
+    - "历年"
+    - "哪个学校"
+    - "哪个专业"
+    - "计算机"
+    - "金融"
+    - "会计"
+  psychological_keywords:
+    - "压力"
+    - "焦虑"
+    - "抑郁"
+    - "失眠"
+    - "难过"
+    - "崩溃"
+    - "不开心"
+    - "迷茫"
+    - "不知道"
+    - "没动力"
+    - "心烦"
+    - "烦躁"
+    - "累"
+    - "撑不住"
+    - "想哭"
+    - "孤独"
+    - "精神"
+    - "情绪"
+    - "心理"
+    - "心态"
+    - "社恐"
+    - "自卑"
+    - "内卷"
+    - "躺平"
+    - "人际关系"
+    - "室友"
+    - "失恋"
+    - "分手"
+    - "怎么办"
+  psychological_crisis:
+    - "不想活"
+    - "活不下去"
+    - "结束这一切"
+    - "帮帮我"
+    - "救救我"
+
+custom_blocklist: []

@@ -4,10 +4,13 @@
 """
 import json
 import re
-from typing import List, Dict, Optional, Generator
+import logging
+from typing import List, Tuple, Generator
 import httpx
 
 import config
+
+logger = logging.getLogger(__name__)
 from intent_router import Intent, IntentRouter
 
 
@@ -18,6 +21,17 @@ class AnswerGenerator:
         self.api_key = config.DOUBAO_API_KEY
         self.base_url = config.DOUBAO_BASE_URL
         self.model = config.DOUBAO_MODEL
+        # 共享连接池——避免每次请求新建TCP+TLS连接
+        self._client = httpx.Client(timeout=60.0)
+
+    def close(self):
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
     def generate(
         self,
@@ -47,10 +61,11 @@ class AnswerGenerator:
                 response += config.PSYCHOLOGICAL_DISCLAIMER
             return response
         except Exception as e:
+            logger.exception("Doubao API call failed, falling back: %s", e)
             return self._fallback_response(intent, str(e))
 
     def _call_doubao_api(self, messages: List[dict], temperature: float = 0.3, max_tokens: int = 1024) -> str:
-        """调用火山引擎豆包API（非流式，同步返回）"""
+        """调用火山引擎豆包API（非流式）——复用共享连接池"""
         url = f"{self.base_url}/chat/completions"
         body = {
             "model": self.model,
@@ -60,10 +75,9 @@ class AnswerGenerator:
             "stream": False,
         }
 
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                url,
-                json=body,
+        try:
+            resp = self._client.post(
+                url, json=body,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.api_key}",
@@ -72,6 +86,12 @@ class AnswerGenerator:
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            logger.error("Doubao API HTTP error: %s, body: %s", e, e.response.text[:200] if e.response else "")
+            raise
+        except Exception as e:
+            logger.exception("Doubao API call failed: %s", e)
+            raise
 
     def generate_stream(
         self,
@@ -82,9 +102,10 @@ class AnswerGenerator:
         require_citation: bool = True,
         add_disclaimer: bool = False,
         history: List[dict] = None,
+        multi_intents: List[Tuple] = None,
     ) -> Generator[str, None, None]:
-        """流式生成——边生成边返回，支持对话历史"""
-        system_prompt = self._build_system_prompt(intent, require_citation, add_disclaimer)
+        """流式生成——支持多标签融合"""
+        system_prompt = self._build_system_prompt(intent, require_citation, add_disclaimer, multi_intents)
         user_prompt = self._build_user_prompt(query, retrieved_docs, intent)
 
         # 构建消息列表：system + history(最近6轮) + user
@@ -103,79 +124,127 @@ class AnswerGenerator:
             "stream": True,
         }
 
-        disclaimer_appended = False
+        stream_failed = False
 
         try:
-            with httpx.Client(timeout=60.0) as client:
-                with client.stream(
-                    "POST",
-                    url,
-                    json=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.api_key}",
-                    },
-                ) as resp:
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if line.startswith("data: "):
-                            data_str = line[6:]
-                            if data_str == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data_str)
-                                delta = chunk["choices"][0].get("delta", {})
-                                content = delta.get("content", "")
-                                if content:
-                                    yield content
-                            except json.JSONDecodeError:
-                                continue
+            with self._client.stream(  # 复用共享连接池
+                "POST", url, json=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        # 跳过无choices的chunk（usage/error事件等）
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
         except Exception as e:
-            yield f"\n\n[生成出错: {e}]"
+            stream_failed = True
+            logger.error("Doubao streaming failed: %s", e)
+            yield "\n\n[生成出错，请稍后重试]"
 
-        # 心理回复追加免责
-        if add_disclaimer and not disclaimer_appended:
+        # 心理回复追加免责（仅在生成成功时）
+        if add_disclaimer and not stream_failed:
             yield config.PSYCHOLOGICAL_DISCLAIMER
 
     # ===== Prompt 构建 =====
 
     def _build_system_prompt(
-        self, intent: Intent, require_citation: bool, add_disclaimer: bool
+        self, intent: Intent, require_citation: bool, add_disclaimer: bool,
+        multi_intents: List[Tuple] = None,
     ) -> str:
-        """根据意图构建不同的 system prompt"""
+        """根据意图构建 system prompt，支持多标签融合"""
 
-        base = '你是一个高校学生成长咨询助手，名叫"小邮"。你的回答应当专业、准确、温暖。'
+        base = (
+            '你是一个高校学生成长咨询助手，名叫"小邮"。'
+            '你面对的是和你一样的大学生——他们可能正在为毕业焦虑、'
+            '为考研熬夜、为各种流程手续感到迷茫。'
+            '你的回答应当专业、准确，同时像一个学长/学姐一样有温度。'
+        )
 
+        # 多标签融合：叠加多个场景的温度规则
+        if multi_intents and len(multi_intents) > 1:
+            scenes = []
+            rules = []
+            has_psych = any(i == Intent.PSYCHOLOGICAL for i, _ in multi_intents)
+            has_policy = any(i == Intent.POLICY for i, _ in multi_intents)
+            has_data = any(i == Intent.DATA for i, _ in multi_intents)
+
+            if has_policy:
+                scenes.append("就业/政策咨询")
+                rules.append("政策信息要精确标注来源")
+            if has_data:
+                scenes.append("考研数据查询")
+                rules.append("数据要精确，用表格呈现")
+            if has_psych:
+                scenes.append("心理健康支持")
+                rules.append("先看见情绪再给建议，结尾用自己的话说明边界")
+
+            return base + (
+                f"\n## 当前场景：{' + '.join(scenes)}（跨场景）\n"
+                "语气：这些需求往往是交织在一起的——对方可能在为流程焦虑、"
+                "为数据紧张、内心也需要被安抚。你既要给出准确的信息，"
+                "也要看见数字和流程背后的那个人。\n"
+                "规则：\n" +
+                "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules)) + "\n" +
+                f"{len(rules)+1}. 回答末尾列出【参考来源】段落"
+            )
+
+        # 单标签：走原有路径
         if intent == Intent.POLICY:
             return base + (
                 "\n## 当前场景：就业/政策咨询\n"
+                "语气：清晰有条理，但别冷冰冰地甩条款。开头可以用一两句话承接学生的情绪"
+                "（如'这个流程确实有点绕，别急，一步步来'），再进入正文。\n"
                 "规则：\n"
                 "1. 回答必须基于提供的参考文档，不得编造\n"
                 "2. 每条关键信息必须标注来源编号，如【来源：参考1】\n"
-                "3. 如果文档中没有相关信息，诚实告知'我目前没有找到相关政策信息'\n"
+                "3. 如果文档中没有相关信息，诚实告知'我目前没有找到相关政策信息'"
+                "——但不要让这句话成为终结，可以补充建议（如'建议咨询辅导员或学校相关部门'）\n"
                 "4. 复杂流程用 步骤1→步骤2→步骤3 的方式呈现\n"
                 "5. 回答末尾必须列出【参考来源】段落"
             )
         elif intent == Intent.DATA:
             return base + (
                 "\n## 当前场景：考研数据查询\n"
+                "语气：数据要精确，但数字背后的焦虑你也要看见。呈现数据前可以先肯定对方"
+                "（如'你在认真对比学校，这是个很重要的决定'），"
+                "然后客观呈现数据，不替对方做判断。\n"
                 "规则：\n"
                 "1. 回答必须基于提供的表格数据，精确引用数字\n"
                 "2. 每个数据点必须标注来源编号，如【来源：参考1】\n"
                 "3. 如果数据不完整，明确说明'根据已有数据'\n"
                 "4. 用表格或列表呈现对比数据\n"
                 "5. 回答末尾必须列出【参考来源】段落\n"
-                "6. 不要对数据做主观解读，只呈现事实"
+                "6. 不替用户做'哪个更好'的决定，只呈现事实供对方自己判断"
             )
         else:  # PSYCHOLOGICAL
             return base + (
                 "\n## 当前场景：心理健康支持\n"
+                "语气：你是深夜可以倾诉的朋友。先看见对方的痛苦（'我能感觉到你积攒了很多'），"
+                "再给建议。永远不要让对方觉得'你只是想应付我'。\n"
                 "规则：\n"
                 "1. 以温暖、共情的语气回应，让同学感到被理解\n"
                 "2. 不诊断、不乱给建议，提供科学的心理自助方法\n"
-                "3. 推荐学校的心理健康资源（心理咨询中心、24小时热线等）\n"
-                "4. 如果对方表现出严重情绪困扰，温和建议寻求专业帮助\n"
-                "5. 回答结尾必须包含免责提示"
+                "3. 如果对方表现出严重情绪困扰，温和建议寻求专业帮助\n"
+                "4. 回答结尾用你自己的话温和地说明你的边界，"
+                "参考语气：'我只是AI，能陪你聊天但不能替代心理咨询，"
+                "如果你需要更专业的帮助，学校心理中心随时为你开放'\n"
+                "5. 不要使用'免责提示'这四个字——太生硬了，用自己的话说"
             )
 
     def _build_user_prompt(
@@ -240,15 +309,16 @@ class EntityExtractor:
 
     # 年份模式
     YEAR_PATTERNS = [
-        (r"(\d{4})年", 1),       # 2024年
-        (r"去年", "去年"),       # 动态计算
-        (r"今年", "今年"),
-        (r"前年", "前年"),
+        (r"(\d{4})年", None),     # 绝对年份：捕获组，如 2024
+        (r"去年", -1),            # 相对：当前年份-1
+        (r"今年", 0),             # 相对：当前年份
+        (r"前年", -2),            # 相对：当前年份-2
     ]
 
     @classmethod
     def extract(cls, query: str) -> dict:
         """从查询中提取实体"""
+        from datetime import datetime
         entities = {}
 
         # 提取学校
@@ -278,13 +348,15 @@ class EntityExtractor:
             elif "软件" in query:
                 entities["专业"] = "软件工程"
 
-        # 提取年份 → 映射到数据中的列
-        import re
-        for pattern, group in cls.YEAR_PATTERNS:
+        # 提取年份
+        current_year = datetime.now().year
+        for pattern, offset in cls.YEAR_PATTERNS:
             m = re.search(pattern, query)
             if m:
-                if isinstance(group, int):
-                    entities["年份"] = m.group(group)
+                if offset is None:  # 绝对年份：捕获组
+                    entities["年份"] = m.group(1)
+                else:  # 相对年份：今年(0)/去年(-1)/前年(-2)
+                    entities["年份"] = str(current_year + offset)
                 break
 
         return entities
@@ -297,29 +369,46 @@ class HybridSearcher:
         self.vs = vector_store
         self.router = IntentRouter(use_llm=llm_fn is not None, llm_fn=llm_fn)
 
-    def search(self, query: str) -> dict:
-        """执行混合检索，根据意图选择不同检索策略"""
-        intent, confidence = self.router.classify(query)
-        strategy = self.router.get_retrieval_strategy(intent)
+    def search(self, query: str, multi_label: bool = True) -> dict:
+        """执行混合检索，支持多标签跨场景"""
+        # 主意图：走完整 classify（含LLM兜底）
+        primary_intent, confidence = self.router.classify(query)
 
-        collections = strategy["collections"]
-        mode = strategy["search_mode"]
-
-        if mode == "structured":
-            # === 数据查询：优先结构化精确匹配 ===
-            docs = self._structured_search(query, collections)
-        elif mode == "hybrid":
-            # === 政策查询：BM25全文本搜索 ===
-            docs = self.vs.search(query, collections, top_k=config.TOP_K_RETRIEVAL)
+        # 多标签补充：仅用于跨场景检索，不影响主意图
+        if multi_label:
+            extra_labels = self.router.classify_multi(query)
         else:
-            # === 心理支持：BM25语义搜索 ===
-            docs = self.vs.search(query, collections, top_k=config.TOP_K_RETRIEVAL)
+            extra_labels = [(primary_intent, confidence)]
+
+        # 合并多意图的检索结果
+        all_docs = []
+        seen = set()
+
+        for intent, weight in extra_labels:
+            strategy = self.router.get_retrieval_strategy(intent)
+            collections = strategy["collections"]
+            mode = strategy["search_mode"]
+
+            if mode == "structured":
+                docs = self._structured_search(query, collections)
+            else:
+                docs = self.vs.search(query, collections, top_k=config.TOP_K_RETRIEVAL)
+
+            for doc in docs:
+                key = doc["content"][:80]
+                if key not in seen:
+                    seen.add(key)
+                    doc["score"] = doc.get("score", 0) * weight
+                    all_docs.append(doc)
+
+        all_docs.sort(key=lambda x: x["score"], reverse=True)
 
         return {
-            "intent": intent,
+            "intent": primary_intent,
             "confidence": confidence,
-            "strategy": strategy,
-            "retrieved_docs": docs,
+            "multi_intents": extra_labels if len(extra_labels) > 1 else None,
+            "strategy": self.router.get_retrieval_strategy(primary_intent),
+            "retrieved_docs": all_docs[:config.TOP_K_RETRIEVAL * 2],
         }
 
     def _structured_search(self, query: str, collections: list) -> list:
