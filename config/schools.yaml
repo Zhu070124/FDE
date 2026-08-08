@@ -1,0 +1,120 @@
+# 多校配置 —— 面向全国高校的规模化部署
+# 修改 active_school 即可一键切换目标学校
+# 所有硬编码的校名/热线/心理中心名均从此文件读取
+
+active_school: cqupt
+
+schools:
+  # === 重庆邮电大学（默认） ===
+  cqupt:
+    name: 重庆邮电大学
+    short_name: 重邮
+    assistant_name: 小邮
+    assistant_greeting: 你好！我是小邮
+    subtitle: 学生成长一站式咨询
+    mental_health_center: 重庆邮电大学心理健康中心
+    mental_health_contact: 校内咨询（请查看学校官网获取地址和预约方式）
+    national_hotline: "400-161-9995"
+    hotline_label: 全国24小时心理援助热线
+    knowledge_base_path: data/documents
+    fanya_school_id: null  # 泛雅学习通平台学校ID（待对接后填入）
+    entity_aliases:
+      - 重庆邮电大学
+      - 重邮
+    regions:
+      - 重庆
+
+  # === 重庆大学 ===
+  cqu:
+    name: 重庆大学
+    short_name: 重大
+    assistant_name: 小渝
+    assistant_greeting: 你好！我是小渝
+    subtitle: 学生成长一站式咨询
+    mental_health_center: 重庆大学心理健康教育与咨询中心
+    mental_health_contact: 虎溪校区：023-65678000 | A区：023-65111234
+    national_hotline: "400-161-9995"
+    hotline_label: 全国24小时心理援助热线
+    knowledge_base_path: data/documents_cqu
+    fanya_school_id: null
+    entity_aliases:
+      - 重庆大学
+      - 重大
+    regions:
+      - 重庆
+
+  # === 西南大学 ===
+  swu:
+    name: 西南大学
+    short_name: 西大
+    assistant_name: 小西
+    assistant_greeting: 你好！我是小西
+    subtitle: 学生成长一站式咨询
+    mental_health_center: 西南大学心理健康服务中心
+    mental_health_contact: 北碚校区：023-68251234
+    national_hotline: "400-161-9995"
+    hotline_label: 全国24小时心理援助热线
+    knowledge_base_path: data/documents_swu
+    fanya_school_id: null
+    entity_aliases:
+      - 西南大学
+      - 西大
+    regions:
+      - 重庆
+
+  # === 四川大学（跨省示例） ===
+  scu:
+    name: 四川大学
+    short_name: 川大
+    assistant_name: 小川
+    assistant_greeting: 你好！我是小川
+    subtitle: 学生成长一站式咨询
+    mental_health_center: 四川大学心理健康教育中心
+    mental_health_contact: 望江校区：028-85401234
+    national_hotline: "400-161-9995"
+    hotline_label: 全国24小时心理援助热线
+    knowledge_base_path: data/documents_scu
+    fanya_school_id: null
+    entity_aliases:
+      - 四川大学
+      - 川大
+    regions:
+      - 四川
+      - 成都
+
+# === 全国高校公共实体库（用于 NL2SQL 和意图识别） ===
+# EntityExtractor 从此列表加载，不再硬编码
+entity_registry:
+  schools:
+    - 重庆邮电大学
+    - 重庆大学
+    - 西南大学
+    - 重庆交通大学
+    - 重庆理工大学
+    - 重庆师范大学
+    - 重庆工商大学
+    - 四川大学
+    - 电子科技大学
+    - 北京大学
+    - 清华大学
+  school_aliases:
+    重邮: 重庆邮电大学
+    重大: 重庆大学
+    西大: 西南大学
+    川大: 四川大学
+    北大: 北京大学
+    清华: 清华大学
+  majors:
+    - 计算机科学与技术
+    - 计算机技术
+    - 软件工程
+    - 信息与通信工程
+    - 控制科学与工程
+    - 教育学
+    - 电子信息
+    - 人工智能
+    - 金融
+    - 会计
+    - 工商管理
+    - 法学
+    - 医学

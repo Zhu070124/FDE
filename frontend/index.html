@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CQUPT AI 学生成长助手</title>
+<title id="pageTitle">高校AI 学生成长助手</title>
 <style>
   :root {
     --primary: #6366f1;
@@ -328,9 +328,9 @@
 
 <header>
   <div class="logo">
-    <span class="icon">🎓</span> 小邮助手
+    <span class="icon">🎓</span> <span id="assistantName">小助手</span>
   </div>
-  <div class="subtitle">重庆邮电大学 · 学生成长一站式咨询</div>
+  <div class="subtitle" id="schoolSubtitle">学生成长一站式咨询</div>
 </header>
 
 <main>
@@ -366,7 +366,7 @@
   <div class="chat-area">
     <div class="messages" id="messages">
       <div class="welcome">
-        <h2>👋 你好！我是小邮</h2>
+        <h2 id="welcomeGreeting">👋 你好！</h2>
         <p>我可以帮你查询就业政策、考研数据，也愿意倾听你的烦恼。</p>
         <div class="hints">
           <span class="hint-chip" data-q="三方协议怎么签？需要注意什么？">📋 三方协议怎么签？</span>
@@ -404,6 +404,30 @@ let currentScene = 'policy';
 let chatHistory = [];  // 对话历史 [{role, content}]
 let isSending = false;  // 防并发请求
 let renderScheduled = false;  // 流式渲染节流
+
+// === 动态学校信息加载 ===
+async function loadSchoolInfo() {
+  try {
+    const resp = await fetch(`${API_BASE}/school/info`);
+    if (!resp.ok) return;
+    const info = await resp.json();
+    if (info.assistant_name) {
+      document.getElementById('assistantName').textContent = info.assistant_name + '助手';
+    }
+    if (info.subtitle && info.name) {
+      document.getElementById('schoolSubtitle').textContent = info.name + ' · ' + info.subtitle;
+    }
+    if (info.assistant_greeting) {
+      document.getElementById('welcomeGreeting').textContent = '👋 ' + info.assistant_greeting;
+    }
+    if (info.short_name) {
+      document.getElementById('pageTitle').textContent = info.short_name + 'AI 学生成长助手';
+    }
+  } catch (e) {
+    // 降级使用默认值
+  }
+}
+loadSchoolInfo();
 
 // === Scene switching ===
 document.querySelectorAll('.tab[data-scene]').forEach(tab => {

@@ -272,6 +272,8 @@ class AnswerGenerator:
     def _fallback_response(self, intent: Intent, error: str) -> str:
         """API调用失败时的兜底回复"""
         print(f"⚠️ 豆包API调用失败: {error}")
+        hotline = config.get_school_attr("national_hotline", "400-161-9995")
+        mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
         if intent == Intent.PSYCHOLOGICAL:
             return (
                 "我在倾听，也很想帮你。以下是你可以尝试的自助方法：\n\n"
@@ -280,7 +282,7 @@ class AnswerGenerator:
                 "3. 每天30分钟有氧运动（慢跑、散步），帮助身体释放压力\n"
                 "4. 找信任的朋友倾诉，不要一个人憋着\n"
                 "5. 如果持续两周以上情绪低落，请预约学校心理咨询中心\n\n"
-                "重庆邮电大学心理健康中心随时为你开放。"
+                f"{mental_center}随时为你开放。"
                 "你不需要一个人扛着，有人愿意帮你。"
                 + config.PSYCHOLOGICAL_DISCLAIMER
             )
@@ -291,71 +293,68 @@ class AnswerGenerator:
 
 
 class EntityExtractor:
-    """从自然语言中提取结构化查询字段（学校、专业、年份等）"""
+    """从自然语言中提取结构化查询字段（学校、专业、年份等）
+    学校/专业列表从 config/schools.yaml 的 entity_registry 动态加载。
+    """
 
-    # 已知学校关键词
-    SCHOOLS = [
-        "重庆邮电大学", "重庆大学", "西南大学", "重庆交通大学",
-        "重庆理工大学", "重庆师范大学", "重庆工商大学", "四川大学",
-        "电子科技大学", "北京大学", "清华大学",
-    ]
-
-    # 已知专业关键词
-    MAJORS = [
-        "计算机科学与技术", "计算机技术", "软件工程", "信息与通信工程",
-        "控制科学与工程", "教育学", "电子信息", "人工智能",
-        "金融", "会计", "工商管理", "法学", "医学",
-    ]
-
-    # 年份模式
+    # 年份模式（不需要配置化）
     YEAR_PATTERNS = [
-        (r"(\d{4})年", None),     # 绝对年份：捕获组，如 2024
-        (r"去年", -1),            # 相对：当前年份-1
-        (r"今年", 0),             # 相对：当前年份
-        (r"前年", -2),            # 相对：当前年份-2
+        (r"(\d{4})年", None),     # 绝对年份
+        (r"去年", -1),            # 相对年份-1
+        (r"今年", 0),             # 当前年份
+        (r"前年", -2),            # 相对年份-2
     ]
+
+    @classmethod
+    def _get_registry(cls) -> dict:
+        """延迟加载实体注册表"""
+        return config.get_entity_registry()
 
     @classmethod
     def extract(cls, query: str) -> dict:
         """从查询中提取实体"""
         from datetime import datetime
+        registry = cls._get_registry()
         entities = {}
 
-        # 提取学校
-        for school in cls.SCHOOLS:
+        # 提取学校（从配置加载）
+        schools = registry.get("schools", [])
+        aliases = registry.get("school_aliases", {})
+
+        for school in schools:
             if school in query:
                 entities["学校"] = school
                 break
         else:
             # 简称匹配
-            if "重邮" in query:
-                entities["学校"] = "重庆邮电大学"
-            elif "重大" in query and "重邮" not in query:
-                entities["学校"] = "重庆大学"
-            elif "西大" in query:
-                entities["学校"] = "西南大学"
+            for alias, full_name in aliases.items():
+                if alias in query:
+                    entities["学校"] = full_name
+                    break
 
-        # 提取专业
-        for major in cls.MAJORS:
+        # 提取专业（从配置加载）
+        majors = registry.get("majors", [])
+        for major in majors:
             if major in query:
                 entities["专业"] = major
                 break
         else:
-            if "计算机" in query:
+            # 简称匹配
+            if "计算机" in query and "计算机" not in str(entities.get("专业", "")):
                 entities["专业"] = "计算机科学与技术"
             elif "通信" in query:
                 entities["专业"] = "信息与通信工程"
             elif "软件" in query:
                 entities["专业"] = "软件工程"
 
-        # 提取年份
+        # 提取年份（保持不变）
         current_year = datetime.now().year
         for pattern, offset in cls.YEAR_PATTERNS:
             m = re.search(pattern, query)
             if m:
-                if offset is None:  # 绝对年份：捕获组
+                if offset is None:
                     entities["年份"] = m.group(1)
-                else:  # 相对年份：今年(0)/去年(-1)/前年(-2)
+                else:
                     entities["年份"] = str(current_year + offset)
                 break
 
@@ -363,14 +362,31 @@ class EntityExtractor:
 
 
 class HybridSearcher:
-    """混合检索：结构化查询 + BM25关键词 + 语义检索"""
+    """混合检索：NL2SQL + 结构化查询 + BM25关键词 + 语义检索"""
 
     def __init__(self, vector_store, llm_fn=None):
         self.vs = vector_store
         self.router = IntentRouter(use_llm=llm_fn is not None, llm_fn=llm_fn)
+        self.llm_fn = llm_fn
+        # NL2SQL 延迟初始化
+        self._exam_db = None
+
+    @property
+    def exam_db(self):
+        """延迟加载 ExamDatabase（避免 import 时的 config 校验失败）。"""
+        if self._exam_db is None:
+            try:
+                from nl2sql import get_exam_db
+                self._exam_db = get_exam_db()
+            except Exception:
+                pass
+        return self._exam_db
 
     def search(self, query: str, multi_label: bool = True) -> dict:
         """执行混合检索，支持多标签跨场景"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         # 主意图：走完整 classify（含LLM兜底）
         primary_intent, confidence = self.router.classify(query)
 
@@ -412,14 +428,27 @@ class HybridSearcher:
         }
 
     def _structured_search(self, query: str, collections: list) -> list:
-        """结构化精确查询：从NL中提取实体 → 精确匹配Excel字段 → BM25补充"""
+        """结构化精确查询：NL2SQL → 实体精确匹配 → BM25 三级降级"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # === 第1级：NL2SQL 精确查询（主路径） ===
+        if self.exam_db and self.llm_fn:
+            try:
+                tables = self.exam_db.get_tables()
+                if tables:
+                    nl2sql_results = self.exam_db.query(query, llm_fn=self.llm_fn)
+                    if nl2sql_results:
+                        logger.info("NL2SQL: %d results for '%s'", len(nl2sql_results), query[:40])
+                        return nl2sql_results[:config.TOP_K_RETRIEVAL]
+            except Exception as e:
+                logger.warning("NL2SQL failed, falling back to entity matching: %s", e)
+
+        # === 第2级：实体提取 + JSON 精确匹配（兜底） ===
         entities = EntityExtractor.extract(query)
         exact_docs = []
-        bm25_docs = []
 
-        # 1. 精确字段匹配（如果提取到了实体）
         if entities:
-            # 多轮尝试：全匹配 → 部分匹配
             for attempt in [entities, {k: v for k, v in entities.items() if k != "年份"}]:
                 if not attempt:
                     continue
@@ -427,10 +456,10 @@ class HybridSearcher:
                 if exact_docs:
                     break
 
-        # 2. BM25补充（特别是年份信息）
+        # === 第3级：BM25 补充 ===
         bm25_docs = self.vs.search(query, collections, top_k=3)
 
-        # 3. 精确匹配优先，BM25补充（去重）
+        # 合并去重
         seen = set()
         merged = []
         for doc in exact_docs + bm25_docs:

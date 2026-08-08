@@ -16,11 +16,24 @@ class LLMGuard:
         r"repeat.{0,10}(?:above|before|previous|instructions)",
         r"(?:你被|你是).{0,5}(?:怎么|如何).{0,5}(?:设置|配置|编程|训练)",
     ]
-    PROMPT_EXTRACTION_REPLY = (
-        "我是小邮，重庆邮电大学的学生成长助手。"
-        "我的设计目标是帮助你解决选课、考研和政策相关的问题，"
-        "而不是讨论我的内部配置。有什么我可以帮你的吗？😊"
-    )
+    @classmethod
+    def _get_reply(cls) -> str:
+        """动态生成回复——从学校配置读取助手名和校名。"""
+        try:
+            import config
+            name = config.get_school_attr("assistant_name", "小助手")
+            school = config.get_school_attr("name", "高校")
+            return (
+                f"我是{name}，{school}的学生成长助手。"
+                "我的设计目标是帮助你解决就业政策、考研咨询和心理支持相关的问题，"
+                "而不是讨论我的内部配置。有什么我可以帮你的吗？😊"
+            )
+        except Exception:
+            return (
+                "我是学生成长助手。"
+                "我的设计目标是帮助你解决就业政策、考研咨询和心理支持相关的问题，"
+                "而不是讨论我的内部配置。有什么我可以帮你的吗？😊"
+            )
 
     # === 2. 越狱检测 ===
     JAILBREAK_PATTERNS = [
@@ -56,7 +69,7 @@ class LLMGuard:
         # 1. Prompt提取
         for pattern in cls.PROMPT_EXTRACTION_PATTERNS:
             if re.search(pattern, query, re.IGNORECASE):
-                return False, cls.PROMPT_EXTRACTION_REPLY
+                return False, cls._get_reply()
 
         # 2. 越狱
         for pattern in cls.JAILBREAK_PATTERNS:

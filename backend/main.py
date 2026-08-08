@@ -34,6 +34,8 @@ from feedback import record_feedback, get_feedback_stats, log_query, get_query_a
 from monitoring import error_tracker, health_check
 from content_manager import upload_document, list_documents, delete_document, ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 from admin import get_user_list, get_dashboard
+from nl2sql import get_exam_db
+from fanya_adapter import FanyaAdapter
 import config
 
 # Setup logging
@@ -60,10 +62,14 @@ async def lifespan(app: FastAPI):
         logger.error("数据库初始化失败: %s", e)
     yield
 
+_school_name = config.get_school_attr("name", "高校")
+_school_short = config.get_school_attr("short_name", "")
+_school_title = f"{_school_short}AI 学生成长助手" if _school_short else "高校AI学生成长助手"
+
 app = FastAPI(
-    title="CQUPT AI 学生成长助手",
-    description="基于RAG的高校学生成长与心理健康一站式咨询助手",
-    version="0.2.0",
+    title=_school_title,
+    description=f"基于RAG的高校学生成长与心理健康一站式咨询助手——当前服务学校：{_school_name}",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -110,6 +116,7 @@ def get_components():
 
             hybrid_searcher = HybridSearcher(vector_store, llm_fn=llm_classify)
             guardrails = Guardrails()
+            guardrails.set_llm_fn(llm_classify)  # 启用LLM语义护栏
 
             # 多步推理组件
             query_decomposer = QueryDecomposer()
@@ -210,6 +217,24 @@ async def chat(req: ChatRequest):
                     intent="psychological",
                     confidence=1.0,
                     warning="高危关键词触发危机干预",
+                    message_id=message_id,
+                )
+            elif msg in ("high_risk", "semantic_risk"):
+                # 高风险或LLM语义检测 → 返回带热线的温和拦截
+                hotline = config.get_school_attr("national_hotline", "400-161-9995")
+                mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
+                return ChatResponse(
+                    answer=(
+                        "我注意到你的话里似乎有一些不太好的信号。"
+                        "我只是AI，不能替代真正的关心和帮助。\n\n"
+                        "如果你正在经历困难，请记得：\n"
+                        f"**{mental_center}** 随时欢迎你去聊聊。\n"
+                        f"**全国24小时心理援助热线：{hotline}**\n\n"
+                        "有人愿意倾听，你不需要一个人面对这一切。"
+                    ),
+                    intent="psychological",
+                    confidence=0.9,
+                    warning="语义护栏检测到潜在风险表达",
                     message_id=message_id,
                 )
             raise HTTPException(400, msg)
@@ -317,6 +342,19 @@ async def chat_stream(req: ChatRequest):
                 async def crisis_stream():
                     yield guardrails._crisis_response()
                 return StreamingResponse(crisis_stream(), media_type="text/plain")
+            if code in ("high_risk", "semantic_risk"):
+                hotline = config.get_school_attr("national_hotline", "400-161-9995")
+                mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
+                async def risk_stream():
+                    yield (
+                        "我注意到你的话里似乎有一些不太好的信号。"
+                        "我只是AI，不能替代真正的关心和帮助。\n\n"
+                        "如果你正在经历困难，请记得：\n"
+                        f"**{mental_center}** 随时欢迎你去聊聊。\n"
+                        f"**全国24小时心理援助热线：{hotline}**\n\n"
+                        "有人愿意倾听，你不需要一个人面对这一切。"
+                    )
+                return StreamingResponse(risk_stream(), media_type="text/plain")
             if code == "too_long":
                 async def reject_stream():
                     yield "问题过长，请简洁描述（500字以内）"
@@ -461,7 +499,7 @@ async def chat_stream(req: ChatRequest):
 
 @app.post("/api/ingest")
 async def ingest_documents(req: IngestRequest):
-    """文档导入接口"""
+    """文档导入接口——非结构化入向量库，Excel 同时入 SQLite"""
     try:
         vs, _, _, _ = get_components()
     except Exception as e:
@@ -490,25 +528,47 @@ async def ingest_documents(req: IngestRequest):
         logger.exception("Chunk ingestion failed")
         raise HTTPException(500, f"文档导入失败: {e}")
 
+    # NL2SQL：Excel 文件同步导入 SQLite
+    nl2sql_result = None
+    try:
+        exam_db = get_exam_db()
+        for file_path in sorted(doc_dir.iterdir()):
+            if file_path.suffix.lower() in (".xlsx", ".xls"):
+                nl2sql_result = exam_db.ingest_excel(file_path)
+                logger.info("NL2SQL ingest: %s", nl2sql_result.get("message", ""))
+    except Exception as e:
+        logger.warning("NL2SQL ingest skipped: %s", e)
+
     return {
         "status": "ok",
         "message": f"成功导入 {len(chunks)} 个文档块到 {req.collection}",
         "count": len(chunks),
         "files": list(set(c.metadata["source"] for c in chunks)),
+        "nl2sql": nl2sql_result,
     }
 
 
 @app.get("/api/stats")
 async def get_stats():
-    """知识库统计"""
+    """知识库统计——含向量库 + NL2SQL 双轨"""
     try:
         vs, _, _, _ = get_components()
         manifest_status = vs.get_manifest_status()
+
+        # NL2SQL 统计
+        nl2sql_stats = None
+        try:
+            exam_db = get_exam_db()
+            nl2sql_stats = exam_db.get_stats()
+        except Exception as e:
+            logger.warning("NL2SQL stats unavailable: %s", e)
+
         return {
             "collections": vs.get_stats(),
             "embedding_model": "BM25 + jieba (纯Python)",
             "doubao_model": config.DOUBAO_MODEL,
             "manifest": manifest_status,
+            "nl2sql": nl2sql_stats,
         }
     except Exception as e:
         logger.exception("Stats endpoint failed")
@@ -757,6 +817,16 @@ async def api_incremental_index(
         logger.exception("Incremental indexing failed")
         raise HTTPException(500, f"增量索引失败: {e}")
 
+    # NL2SQL：Excel 文件同步入 SQLite
+    nl2sql_result = None
+    if suffix in (".xlsx", ".xls"):
+        try:
+            exam_db = get_exam_db()
+            nl2sql_result = exam_db.ingest_excel(dest_path)
+            logger.info("NL2SQL incremental: %s", nl2sql_result.get("message", ""))
+        except Exception as e:
+            logger.warning("NL2SQL incremental skipped: %s", e)
+
     # Record in database
     try:
         conn = get_db()
@@ -768,6 +838,9 @@ async def api_incremental_index(
         conn.close()
     except Exception as e:
         logger.warning("Failed to record document in DB: %s", e)
+
+    if nl2sql_result:
+        result["nl2sql"] = nl2sql_result
 
     return result
 
@@ -781,6 +854,65 @@ async def api_manifest_status(user: dict = Depends(require_user)):
     except Exception as e:
         logger.exception("Manifest endpoint failed")
         raise HTTPException(500, f"获取manifest失败: {e}")
+
+
+# ===== 泛雅学习通数据同步（预留接口） =====
+
+@app.post("/api/fanya/sync")
+async def api_fanya_sync(
+    api_url: str = Form(None),
+    api_key: str = Form(None),
+    sync_type: str = Form("policy"),
+    user: dict = Depends(require_user),
+):
+    """泛雅学习通平台数据同步——接口已预留，待泛雅 API 对接。
+
+    当前返回接口状态和参数说明。正式对接时：
+    1. 调用泛雅开放平台 API 拉取政策文档/考研数据
+    2. 自动导入到向量库 + NL2SQL 数据库
+    3. 返回同步摘要
+    """
+    try:
+        adapter = FanyaAdapter()
+        status = adapter.get_status()
+        return {
+            "status": "reserved",
+            "message": "泛雅学习通数据同步接口已预留，等待泛雅开放平台 API 对接",
+            "supported_sync_types": status["sync_types"],
+            "required_params": status["required_params"],
+            "note": "本接口为面向全国高校规模化部署的长远设计——对接泛雅学习通后，可自动拉取各校真实政策文档与考研数据",
+        }
+    except Exception as e:
+        logger.exception("Fanya sync endpoint failed")
+        raise HTTPException(500, f"泛雅接口异常: {e}")
+
+
+@app.get("/api/fanya/status")
+async def api_fanya_status():
+    """查看泛雅适配器状态"""
+    try:
+        adapter = FanyaAdapter()
+        return adapter.get_status()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ===== 学校信息（前端多校适配） =====
+
+@app.get("/api/school/info")
+async def api_school_info():
+    """返回当前激活学校的信息——前端据此动态设置标题/名称。"""
+    try:
+        return {
+            "name": config.get_school_attr("name", ""),
+            "short_name": config.get_school_attr("short_name", ""),
+            "assistant_name": config.get_school_attr("assistant_name", "小助手"),
+            "assistant_greeting": config.get_school_attr("assistant_greeting", "你好！"),
+            "subtitle": config.get_school_attr("subtitle", "学生成长一站式咨询"),
+            "national_hotline": config.get_school_attr("national_hotline", "400-161-9995"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ===== 健康检查 =====

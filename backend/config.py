@@ -123,3 +123,95 @@ def get_custom_blocklist() -> list:
     """Get custom blocklist words from safety config."""
     cfg = load_safety_config()
     return cfg.get("custom_blocklist", [])
+
+
+# === 多校配置（从 schools.yaml 加载） ===
+_schools_config: Optional[Dict[str, Any]] = None
+SCHOOLS_CONFIG_PATH = PROJECT_ROOT / "config" / "schools.yaml"
+
+
+def load_schools_config() -> Dict[str, Any]:
+    """加载 schools.yaml，带缓存"""
+    global _schools_config
+    if _schools_config is not None:
+        return _schools_config
+
+    try:
+        import yaml
+    except ImportError:
+        logger.warning("PyYAML not installed, using built-in school defaults")
+        return _default_school_config()
+
+    path = SCHOOLS_CONFIG_PATH
+    if not path.exists():
+        logger.warning("schools.yaml not found, using defaults")
+        return _default_school_config()
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _schools_config = yaml.safe_load(f) or {}
+        logger.info("Loaded schools config, active: %s", _schools_config.get("active_school", "unknown"))
+    except Exception as e:
+        logger.error("Failed to load schools.yaml: %s", e)
+        _schools_config = _default_school_config()
+
+    return _schools_config
+
+
+def _default_school_config() -> dict:
+    """硬编码兜底——当 schools.yaml 不存在时使用。"""
+    return {
+        "active_school": "cqupt",
+        "schools": {
+            "cqupt": {
+                "name": "重庆邮电大学",
+                "short_name": "重邮",
+                "assistant_name": "小邮",
+                "assistant_greeting": "你好！我是小邮",
+                "subtitle": "学生成长一站式咨询",
+                "mental_health_center": "重庆邮电大学心理健康中心",
+                "mental_health_contact": "校内咨询（请查看学校官网获取地址和预约方式）",
+                "national_hotline": "400-161-9995",
+                "hotline_label": "全国24小时心理援助热线",
+                "knowledge_base_path": "data/documents",
+                "fanya_school_id": None,
+                "entity_aliases": ["重庆邮电大学", "重邮"],
+                "regions": ["重庆"],
+            }
+        },
+        "entity_registry": {
+            "schools": ["重庆邮电大学", "重庆大学", "西南大学"],
+            "school_aliases": {"重邮": "重庆邮电大学", "重大": "重庆大学", "西大": "西南大学"},
+            "majors": ["计算机科学与技术", "软件工程"],
+        },
+    }
+
+
+def get_active_school() -> dict:
+    """获取当前激活的学校配置。"""
+    cfg = load_schools_config()
+    active_key = cfg.get("active_school", "cqupt")
+    schools = cfg.get("schools", {})
+    school = schools.get(active_key)
+    if school is None:
+        logger.warning("Active school '%s' not found, falling back to cqupt", active_key)
+        school = schools.get("cqupt", _default_school_config()["schools"]["cqupt"])
+    return school
+
+
+def get_entity_registry() -> dict:
+    """获取全国高校公共实体库（用于 NL2SQL 和意图识别）。"""
+    cfg = load_schools_config()
+    return cfg.get("entity_registry", _default_school_config().get("entity_registry", {}))
+
+
+# 懒加载缓存
+_active_school_cache: Optional[dict] = None
+
+
+def get_school_attr(attr: str, default: str = "") -> str:
+    """获取当前学校的单个属性，便捷函数。"""
+    global _active_school_cache
+    if _active_school_cache is None:
+        _active_school_cache = get_active_school()
+    return _active_school_cache.get(attr, default)

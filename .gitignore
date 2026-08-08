@@ -21,9 +21,12 @@ htmlcov/
 data/documents/*
 data/store/*
 data/reflections/*
+data/exam.db
+data/*.db-journal
 !data/documents/README.md
 !data/store/.gitkeep
 !data/reflections/.gitkeep
+!data/app.db
 
 # Model & embedding artifacts (anchored to known output dirs)
 models/**/*.bin
