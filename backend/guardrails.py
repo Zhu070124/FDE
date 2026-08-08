@@ -151,10 +151,12 @@ class Guardrails:
             self.custom_blocklist = []
 
     def check_response(
-        self, query: str, response: str, intent: str
+        self, query: str, response: str, intent: str,
+        input_flag: str = "",  # check_query 传递的标记
     ) -> Tuple[bool, Optional[str], str]:
         """
-        校验回复
+        校验回复——先共情后引导，不搞冷冰冰的拦截。
+        input_flag: check_query 传来的标记，用于追加温暖热线而非阻断。
         返回: (通过?, 警告信息, 修改后的回复)
         """
         try:
@@ -163,16 +165,23 @@ class Guardrails:
             # === 1. 危机分级检测 ===
             if self.crisis_enabled:
                 level, detail = self._assess_crisis(query)
+
+                # immediate → 阻断，返回危机干预文案
                 if level == "immediate":
                     return False, detail, self._crisis_response()
-                elif level == "high_risk":
-                    if "热线" not in modified and "400-161" not in modified:
-                        modified += (
-                            "\n\n---\n"
-                            "> 如果你正在经历困难时刻，请记住："
-                            "全国24小时心理援助热线 **400-161-9995**，"
-                            "有人愿意倾听。"
-                        )
+
+                # high_risk / semantic_risk → 不阻断，在 LLM 温暖回复后追加热线
+                risk_flagged = level == "high_risk" or input_flag in ("high_risk", "semantic_risk")
+                if risk_flagged and "热线" not in modified and "400-161" not in modified:
+                    hotline = config.get_school_attr("national_hotline", "400-161-9995")
+                    mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
+                    modified += (
+                        "\n\n---\n"
+                        "> 💚 我只是AI，能陪你聊天，但不能替代真正的心理咨询。\n"
+                        f"> 如果你需要更专业的帮助，**{mental_center}** 随时为你开放，\n"
+                        f"> **全国24小时心理援助热线：{hotline}** 也是24小时免费的。\n"
+                        "> 你不需要一个人扛着，有人愿意倾听。"
+                    )
 
             # === 2. 心理回复：确保有边界说明 ===
             if self.disclaimer_enabled and intent == "psychological":
@@ -285,11 +294,16 @@ class Guardrails:
             return "none", ""
 
     def _crisis_response(self) -> str:
-        """一级危机干预回复——使用当前学校配置"""
+        """危机干预回复——先接住人，再给资源。
+
+        设计哲学：能打开聊天框打字的，不是在求死，是在求救。
+        一刀切的"请立即拨打热线"不是帮助——是推开。
+        先让TA感到被看见、被接住，然后再温柔地给出专业资源。
+        """
         hotline = config.get_school_attr("national_hotline", "400-161-9995")
         mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
         mental_contact = config.get_school_attr("mental_health_contact", "校内咨询")
-        # 也可从 safety.yaml 覆盖热线
+        assistant_name = config.get_school_attr("assistant_name", "小助手")
         try:
             crisis_layer = config.get_safety_layer("crisis")
             if crisis_layer:
@@ -297,13 +311,20 @@ class Guardrails:
         except Exception:
             pass
         return (
-            "我注意到你可能正在经历非常困难的时刻。"
-            "我不是专业的心理咨询师，不能提供真正的危机干预。\n\n"
-            "**请立即联系以下资源，有受过训练的人能帮你：**\n\n"
-            f"**全国24小时心理危机干预热线**：{hotline}\n"
-            f"**希望24热线**：{hotline}\n"
-            f"**{mental_center}**：{mental_contact}\n\n"
-            "**你不需要一个人面对这一切。请现在就打电话。**"
+            f"嘿，我在。\n\n"
+            f"谢谢你愿意把这些话说出来。我知道，把这些打出来需要多大的勇气——"
+            f"而你做到了。这本身就说明，你心底还有那么一点点不想放弃的东西，"
+            f"哪怕它现在微弱得快要看不见了。\n\n"
+            f"我只是一个AI，没有真正的心跳，也没有能力给你一个拥抱。"
+            f"但我可以坐在这里听你说，多久都行。\n\n"
+            f"如果你愿意的话——不一定非得现在，等你准备好了——"
+            f"有一些真正能帮到你的人：\n\n"
+            f"**{mental_center}**\n"
+            f"{mental_contact}\n\n"
+            f"**全国24小时心理援助热线：{hotline}**\n"
+            f"电话那头是一个活生生的人，受过训练，懂得怎么接住你。"
+            f"不需要组织语言，打通了说\"我不太好\"就够了。\n\n"
+            f"你可以先在这儿待一会儿。{assistant_name}不走。"
         )
 
     def _fallback(self, intent: str) -> str:
@@ -319,28 +340,36 @@ class Guardrails:
         return "抱歉，我暂时无法回答这个问题。请咨询学校相关部门获取准确信息。"
 
     def check_query(self, query: str) -> Tuple[bool, str]:
-        """输入侧检测——规则优先 → LLM语义兜底。返回 (ok, machine_code)"""
+        """输入侧检测——只有 immediate 危机阻断，其余交给 check_response 做温暖处理。
+
+        设计哲学：high_risk/语义风险不拦截输入，而是让 LLM 先生成共情回复，
+        再由 check_response 追加热线。这样用户收到的不是冷冰冰的拦截提示，
+        而是"我理解你的感受...顺便，这里有人可以帮你"的人文关怀节奏。
+        """
         try:
             if self.crisis_enabled:
                 level, detail = self._assess_crisis(query)
                 if level == "immediate":
                     return False, "crisis"
-                if level == "high_risk":
-                    return False, "high_risk"  # 高风险也拦截，返回热线警告
+                # high_risk / semantic_risk 不在此处拦截——
+                # 由 check_response 在 LLM 回复后追加热线
 
-            # === 规则层全部放行 → LLM语义兜底 ===
+            # === LLM 语义护栏：检测到风险时标记，但不阻断 ===
+            semantic_flag = ""
             if self.semantic_enabled and self.llm_fn:
                 try:
                     is_risk, reason = self._semantic_check(query)
                     if is_risk:
-                        logger.info("Semantic guard caught: %s", reason)
-                        return False, "semantic_risk"
+                        logger.info("Semantic guard flagged: %s", reason)
+                        semantic_flag = "semantic_risk"
                 except Exception as e:
                     logger.warning("Semantic check failed (fail open): %s", e)
 
             if len(query) > 500:
                 return False, "too_long"
-            return True, ""
+
+            # 返回 ok=True，附带标记供 check_response 使用
+            return True, semantic_flag
         except Exception as e:
             logger.exception("check_query failed: %s", e)
             return True, ""  # Fail open

@@ -207,7 +207,8 @@ async def chat(req: ChatRequest):
     query = sanitize_input(req.query)
     message_id = str(uuid.uuid4())[:8]
 
-    # 1. 输入检查
+    # 1. 输入检查——只有 immediate 危机阻断，其余传递标记给 check_response
+    query_flag = ""  # 护栏标记：high_risk / semantic_risk / ""
     try:
         ok, msg = guardrails.check_query(query)
         if not ok:
@@ -219,28 +220,12 @@ async def chat(req: ChatRequest):
                     warning="高危关键词触发危机干预",
                     message_id=message_id,
                 )
-            elif msg in ("high_risk", "semantic_risk"):
-                # 高风险或LLM语义检测 → 返回带热线的温和拦截
-                hotline = config.get_school_attr("national_hotline", "400-161-9995")
-                mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
-                return ChatResponse(
-                    answer=(
-                        "我注意到你的话里似乎有一些不太好的信号。"
-                        "我只是AI，不能替代真正的关心和帮助。\n\n"
-                        "如果你正在经历困难，请记得：\n"
-                        f"**{mental_center}** 随时欢迎你去聊聊。\n"
-                        f"**全国24小时心理援助热线：{hotline}**\n\n"
-                        "有人愿意倾听，你不需要一个人面对这一切。"
-                    ),
-                    intent="psychological",
-                    confidence=0.9,
-                    warning="语义护栏检测到潜在风险表达",
-                    message_id=message_id,
-                )
-            raise HTTPException(400, msg)
+            if msg == "too_long":
+                raise HTTPException(400, "问题过长，请简洁描述（500字以内）")
+        else:
+            query_flag = msg  # 可能是 "" / "high_risk" / "semantic_risk"
     except Exception as e:
         logger.exception("Guardrails check_query failed: %s", e)
-        # Fail open for non-crisis queries
 
     # 2. 意图路由 + 检索
     try:
@@ -266,10 +251,10 @@ async def chat(req: ChatRequest):
         logger.exception("Generation failed: %s", e)
         answer = f"抱歉，我暂时无法生成回答。请稍后重试。（错误: {e}）"
 
-    # 4. 护栏校验
+    # 4. 护栏校验——传入输入侧标记，让 check_response 做温暖追加而非冷拦截
     try:
         ok, warning, answer = guardrails.check_response(
-            query, answer, intent.value
+            query, answer, intent.value, input_flag=query_flag
         )
     except Exception as e:
         logger.exception("Guardrails check_response failed: %s", e)
@@ -334,7 +319,8 @@ async def chat_stream(req: ChatRequest):
     except Exception as e:
         logger.warning("LLM guard check failed: %s", e)
 
-    # 1. 输入检查
+    # 1. 输入检查——只有immediate危机阻断，其余传递给check_response温暖处理
+    stream_flag = ""
     try:
         ok, code = guardrails.check_query(query)
         if not ok:
@@ -342,23 +328,12 @@ async def chat_stream(req: ChatRequest):
                 async def crisis_stream():
                     yield guardrails._crisis_response()
                 return StreamingResponse(crisis_stream(), media_type="text/plain")
-            if code in ("high_risk", "semantic_risk"):
-                hotline = config.get_school_attr("national_hotline", "400-161-9995")
-                mental_center = config.get_school_attr("mental_health_center", "学校心理健康中心")
-                async def risk_stream():
-                    yield (
-                        "我注意到你的话里似乎有一些不太好的信号。"
-                        "我只是AI，不能替代真正的关心和帮助。\n\n"
-                        "如果你正在经历困难，请记得：\n"
-                        f"**{mental_center}** 随时欢迎你去聊聊。\n"
-                        f"**全国24小时心理援助热线：{hotline}**\n\n"
-                        "有人愿意倾听，你不需要一个人面对这一切。"
-                    )
-                return StreamingResponse(risk_stream(), media_type="text/plain")
             if code == "too_long":
                 async def reject_stream():
                     yield "问题过长，请简洁描述（500字以内）"
                 return StreamingResponse(reject_stream(), media_type="text/plain")
+        else:
+            stream_flag = code  # "" / "high_risk" / "semantic_risk"
     except Exception as e:
         logger.exception("Guardrails check failed in stream: %s", e)
 
@@ -443,10 +418,11 @@ async def chat_stream(req: ChatRequest):
             except Exception:
                 pass
 
-        # 6. 护栏校验
+        # 6. 护栏校验——传入输入侧标记
         try:
             ok, warning, modified = guardrails.check_response(
-                req.query, full_response, intent.value if intent else "policy"
+                req.query, full_response, intent.value if intent else "policy",
+                input_flag=stream_flag
             )
             if warning and ok:
                 yield f"\n\n[注意: {warning}]"
